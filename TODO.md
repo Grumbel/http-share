@@ -53,11 +53,11 @@ Derived from PROPOSAL.md.
 
 ## Phase 5: Upload mode
 
-- [ ] `--incoming DIRECTORY`
-- [ ] Simple HTML upload form
-- [ ] Never overwrite existing files unless explicitly requested
-- [ ] `--upload-only`, `--max-upload-size`
-- [ ] Downloads still available unless disabled
+- [x] `--incoming DIRECTORY`
+- [x] Simple HTML upload form
+- [x] Never overwrite existing files unless explicitly requested
+- [x] `--upload-only`, `--max-upload-size`, `--allow-overwrite`
+- [x] Downloads still available unless disabled
 
 ## Phase 6: Lifetime management
 
@@ -83,8 +83,8 @@ Derived from PROPOSAL.md.
 
 ## Current status (2026-07-30)
 
-- Phase 2 leftovers done: `--qr` (pure-Rust terminal QR), IPv6 bind/print (brackets in URLs), graceful Ctrl+C/SIGTERM.
-- Phase 3 (HTTPS) and Phase 4 (Auth) implemented and smoke-tested.
+- Phase 2 leftovers done: `--qr`, IPv6, graceful Ctrl+C.
+- Phase 3 (HTTPS) and Phase 4 (Auth) done.
+- Phase 5 upload mode done: `--incoming`, form at `/upload`, multipart POST,
+  unique names by default, `--upload-only`, `--max-upload-size`, `--allow-overwrite`.
 - Default: random Basic Auth credentials embedded in printed URLs.
-- `--public` disables auth; `--https` enables TLS with persistent or dynamic certs.
-- Next: Phase 5 upload mode.

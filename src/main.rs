@@ -38,6 +38,10 @@ struct Args {
     regenerate_cert: bool,
     user: Option<String>,
     password: Option<String>,
+    incoming: Option<PathBuf>,
+    upload_only: bool,
+    max_upload_size: Option<u64>,
+    allow_overwrite: bool,
 }
 
 fn print_usage(program: &str) {
@@ -62,6 +66,10 @@ Options:
       --regenerate-cert    Replace the persistent self-signed certificate
       --open               Open primary share URL in the default browser
       --qr                 Print a terminal QR code of the primary URL
+      --incoming DIR       Accept uploads into DIR
+      --upload-only        Only accept uploads (no downloads of shared paths)
+      --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
+      --allow-overwrite    Allow uploaded files to replace existing ones
   -h, --help               Print help
 "
     );
@@ -86,6 +94,10 @@ fn parse_args() -> Args {
     let mut user: Option<String> = None;
     let mut password: Option<String> = None;
     let mut random_password = false;
+    let mut incoming: Option<PathBuf> = None;
+    let mut upload_only = false;
+    let mut max_upload_size: Option<u64> = None;
+    let mut allow_overwrite = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -124,6 +136,27 @@ fn parse_args() -> Args {
             "--dynamic-cert" => dynamic_cert = true,
             "--regenerate-cert" => regenerate_cert = true,
             "--random-password" => random_password = true,
+            "--upload-only" => upload_only = true,
+            "--allow-overwrite" => allow_overwrite = true,
+            "--incoming" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --incoming requires a directory path");
+                    std::process::exit(1);
+                }
+                incoming = Some(PathBuf::from(&args[i]));
+            }
+            "--max-upload-size" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --max-upload-size requires a value");
+                    std::process::exit(1);
+                }
+                max_upload_size = Some(parse_size(&args[i]).unwrap_or_else(|e| {
+                    eprintln!("error: invalid --max-upload-size: {e}");
+                    std::process::exit(1);
+                }));
+            }
             "--user" => {
                 i += 1;
                 if i >= args.len() {
@@ -150,10 +183,28 @@ fn parse_args() -> Args {
         i += 1;
     }
 
-    if paths.is_empty() {
-        eprintln!("error: at least one path is required");
+    if paths.is_empty() && incoming.is_none() {
+        eprintln!("error: at least one path is required (or --incoming DIR)");
         print_usage(&program);
         std::process::exit(1);
+    }
+    if upload_only && incoming.is_none() {
+        eprintln!("error: --upload-only requires --incoming DIR");
+        std::process::exit(1);
+    }
+    if let Some(ref dir) = incoming {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!("error: cannot create incoming directory {}: {e}", dir.display());
+            std::process::exit(1);
+        }
+        let meta = fs::metadata(dir).unwrap_or_else(|e| {
+            eprintln!("error: cannot access incoming directory {}: {e}", dir.display());
+            std::process::exit(1);
+        });
+        if !meta.is_dir() {
+            eprintln!("error: --incoming path is not a directory: {}", dir.display());
+            std::process::exit(1);
+        }
     }
 
     // Default: authenticated with random credentials unless --public
@@ -189,7 +240,33 @@ fn parse_args() -> Args {
         regenerate_cert,
         user,
         password,
+        incoming,
+        upload_only,
+        max_upload_size,
+        allow_overwrite,
     }
+}
+
+fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty size".into());
+    }
+    let (num_str, mult) = match s.as_bytes().last().map(|b| b.to_ascii_lowercase()) {
+        Some(b @ (b'k' | b'm' | b'g' | b't')) => {
+            let m = match b {
+                b'k' => 1024u64,
+                b'm' => 1024 * 1024,
+                b'g' => 1024 * 1024 * 1024,
+                b't' => 1024 * 1024 * 1024 * 1024,
+                _ => 1,
+            };
+            (&s[..s.len() - 1], m)
+        }
+        _ => (s, 1u64),
+    };
+    let n: u64 = num_str.trim().parse().map_err(|_| format!("not a number: {num_str}"))?;
+    n.checked_mul(mult).ok_or_else(|| "size overflow".into())
 }
 
 fn random_token(len: usize) -> String {
@@ -401,7 +478,7 @@ fn encode_path_component(s: &str) -> String {
     out
 }
 
-fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>) -> String {
+fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>, show_upload: bool) -> String {
     let mut items: Vec<(String, String, bool)> = Vec::new();
 
     if let Some(dir) = real_dir {
@@ -483,8 +560,14 @@ fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>) -> String {
         ));
     }
 
+    body.push_str(r#"</ul>"#);
+    if show_upload {
+        body.push_str(
+            r#"<p style="margin-top:1.5rem"><a href="/upload">Upload a file…</a></p>"#,
+        );
+    }
     body.push_str(
-        r#"</ul>
+        r#"
 <footer>http-share</footer>
 </body>
 </html>"#,
@@ -625,15 +708,222 @@ fn unauthorized(stream: &mut dyn Write) -> io::Result<()> {
     )
 }
 
+
+fn upload_form_html() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload — http-share</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 28rem; color: #222; }
+  h1 { font-size: 1.2rem; }
+  form { margin-top: 1.5rem; }
+  input[type=file] { display: block; margin: 1rem 0; }
+  button { padding: 0.5rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  a { color: #06c; }
+  .msg { margin-top: 1rem; padding: 0.75rem; background: #f0f7ff; border-radius: 4px; }
+  .err { background: #fff0f0; }
+</style>
+</head>
+<body>
+<h1>Upload a file</h1>
+<p><a href="/">← Shared files</a></p>
+<form method="POST" action="/upload" enctype="multipart/form-data">
+  <input type="file" name="file" required>
+  <button type="submit">Upload</button>
+</form>
+</body>
+</html>"#.to_string()
+}
+
+fn upload_result_html(ok: bool, message: &str) -> String {
+    let cls = if ok { "msg" } else { "msg err" };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload — http-share</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 28rem; color: #222; }}
+  h1 {{ font-size: 1.2rem; }}
+  a {{ color: #06c; }}
+  .msg {{ margin-top: 1rem; padding: 0.75rem; background: #f0f7ff; border-radius: 4px; }}
+  .err {{ background: #fff0f0; }}
+</style>
+</head>
+<body>
+<h1>Upload</h1>
+<p><a href="/upload">Upload another</a> · <a href="/">Shared files</a></p>
+<div class="{cls}">{msg}</div>
+</body>
+</html>"#,
+        cls = cls,
+        msg = html_escape(message)
+    )
+}
+
+/// Sanitize a client-provided filename: basename only, no path separators, no empty.
+fn sanitize_filename(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    // Reject path components
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return None;
+    }
+    // Strip any leading dots-only weirdness beyond hidden files
+    let cleaned: String = name
+        .chars()
+        .map(|c| if c.is_control() { '_' } else { c })
+        .collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn unique_dest(dir: &Path, filename: &str, allow_overwrite: bool) -> PathBuf {
+    let dest = dir.join(filename);
+    if allow_overwrite || !dest.exists() {
+        return dest;
+    }
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let ext = path
+        .extension()
+        .map(|s| format!(".{}", s.to_string_lossy()))
+        .unwrap_or_default();
+    for n in 1..10000 {
+        let candidate = dir.join(format!("{stem}-{n}{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stem}-overflow{ext}"))
+}
+
+/// Extract boundary from Content-Type: multipart/form-data; boundary=...
+fn multipart_boundary(content_type: &str) -> Option<String> {
+    let ct = content_type.to_ascii_lowercase();
+    if !ct.starts_with("multipart/form-data") {
+        return None;
+    }
+    for part in content_type.split(';') {
+        let part = part.trim();
+        if let Some(b) = part
+            .strip_prefix("boundary=")
+            .or_else(|| part.strip_prefix("Boundary="))
+        {
+            let b = b.trim().trim_matches('"');
+            if !b.is_empty() {
+                return Some(b.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Parse a single file part from multipart body. Returns (filename, file_bytes).
+fn parse_multipart_file(body: &[u8], boundary: &str) -> Result<(String, Vec<u8>), String> {
+    let delim = format!("--{boundary}");
+    let delim_bytes = delim.as_bytes();
+    // Find first boundary
+    let mut pos = find_bytes(body, delim_bytes).ok_or("missing multipart boundary")?;
+    pos += delim_bytes.len();
+    // Skip optional CRLF after boundary
+    if body.get(pos..pos + 2) == Some(b"\r\n") {
+        pos += 2;
+    }
+
+    // Walk parts until we find a file field
+    while pos < body.len() {
+        // End marker --boundary--
+        if body.get(pos..pos + 2) == Some(b"--") {
+            break;
+        }
+        // Headers until blank line
+        let headers_end = find_bytes(&body[pos..], b"\r\n\r\n")
+            .ok_or("multipart: missing header terminator")?;
+        let headers = std::str::from_utf8(&body[pos..pos + headers_end])
+            .map_err(|_| "multipart: non-utf8 headers")?;
+        pos += headers_end + 4;
+
+        let mut filename: Option<String> = None;
+        let mut is_file_field = false;
+        for line in headers.lines() {
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("content-disposition:") {
+                // name="file"; filename="x.txt"
+                if let Some(fn_start) = line.find("filename=") {
+                    let rest = &line[fn_start + 9..];
+                    let fname = rest.trim().trim_matches('"').trim_matches('\'');
+                    filename = Some(fname.to_string());
+                    is_file_field = true;
+                }
+                if lower.contains("name=\"file\"") || lower.contains("name=file") {
+                    is_file_field = true;
+                }
+            }
+        }
+
+        // Body until next boundary (preceded by CRLF)
+        let next_delim = format!("\r\n--{boundary}");
+        let next = find_bytes(&body[pos..], next_delim.as_bytes())
+            .ok_or("multipart: missing next boundary")?;
+        let file_data = &body[pos..pos + next];
+        pos += next + next_delim.len();
+        // After boundary: either -- (end) or CRLF
+        if body.get(pos..pos + 2) == Some(b"--") {
+            // end
+        } else if body.get(pos..pos + 2) == Some(b"\r\n") {
+            pos += 2;
+        }
+
+        if is_file_field {
+            let name = filename.unwrap_or_else(|| "upload.bin".into());
+            return Ok((name, file_data.to_vec()));
+        }
+    }
+    Err("multipart: no file field found".into())
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
+}
+
+#[derive(Clone)]
+struct UploadConfig {
+    dir: PathBuf,
+    max_size: Option<u64>,
+    allow_overwrite: bool,
+    upload_only: bool,
+}
+
+
 fn handle_request(
     stream: &mut dyn Write,
-    req: &str,
+    req_head: &str,
+    body: &[u8],
     vfs: &Vfs,
     verbose: bool,
     auth: Option<(&str, &str)>,
     cert_pem: Option<&[u8]>,
+    upload: Option<&UploadConfig>,
 ) {
-    let mut lines = req.lines();
+    let mut lines = req_head.lines();
     let request_line = match lines.next() {
         Some(l) => l,
         None => return,
@@ -653,17 +943,6 @@ fn handle_request(
         }
     }
 
-    if method != "GET" && method != "HEAD" {
-        let _ = write_response(
-            stream,
-            405,
-            "Method Not Allowed",
-            &[("Allow", "GET, HEAD".into())],
-            b"Method Not Allowed",
-        );
-        return;
-    }
-
     if let Some((user, pass)) = auth {
         if !check_basic_auth(&headers, user, pass) {
             let _ = unauthorized(stream);
@@ -675,35 +954,118 @@ fn handle_request(
     let decoded = percent_decode(path_only);
 
     if verbose {
-        eprintln!("→ {method} {decoded}");
+        eprintln!("→ {method} {decoded} (body {} bytes)", body.len());
     }
 
-    // Well-known certificate endpoint (no auth required for install convenience?
-    // Proposal: serve cert so clients can trust it. Keep auth for consistency when enabled,
-    // except we already passed auth above. If public, open; if auth, already checked.)
-    if decoded == "/certificate.pem" || decoded == "certificate.pem" {
-        if let Some(pem) = cert_pem {
+    // Certificate endpoint
+    if method == "GET" || method == "HEAD" {
+        if decoded == "/certificate.pem" || decoded == "certificate.pem" {
+            if let Some(pem) = cert_pem {
+                let headers = [
+                    ("Content-Type", "application/x-pem-file".into()),
+                    ("Content-Length", pem.len().to_string()),
+                    ("Content-Disposition", "attachment; filename=\"certificate.pem\"".into()),
+                    ("Cache-Control", "no-store".into()),
+                ];
+                if method == "HEAD" {
+                    let _ = write_response(stream, 200, "OK", &headers, b"");
+                } else {
+                    let _ = write_response(stream, 200, "OK", &headers, pem);
+                }
+                return;
+            }
+        }
+    }
+
+    // Upload endpoints
+    if let Some(uc) = upload {
+        if decoded == "/upload" || decoded == "upload" {
+            if method == "GET" || method == "HEAD" {
+                let html = upload_form_html();
+                let headers = [
+                    ("Content-Type", "text/html; charset=utf-8".into()),
+                    ("Content-Length", html.len().to_string()),
+                    ("Cache-Control", "no-store".into()),
+                ];
+                if method == "HEAD" {
+                    let _ = write_response(stream, 200, "OK", &headers, b"");
+                } else {
+                    let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
+                }
+                return;
+            }
+            if method == "POST" {
+                let result = handle_upload(body, &headers, uc, verbose);
+                let (ok, msg) = match result {
+                    Ok(path) => (true, format!("Saved as {}", path.display())),
+                    Err(e) => (false, e),
+                };
+                let html = upload_result_html(ok, &msg);
+                let status = if ok { 201 } else { 400 };
+                let reason = if ok { "Created" } else { "Bad Request" };
+                let headers = [
+                    ("Content-Type", "text/html; charset=utf-8".into()),
+                    ("Content-Length", html.len().to_string()),
+                    ("Cache-Control", "no-store".into()),
+                ];
+                let _ = write_response(stream, status, reason, &headers, html.as_bytes());
+                return;
+            }
+        }
+    }
+
+    // Methods for download
+    if method != "GET" && method != "HEAD" {
+        let allow = if upload.is_some() {
+            "GET, HEAD, POST"
+        } else {
+            "GET, HEAD"
+        };
+        let _ = write_response(
+            stream,
+            405,
+            "Method Not Allowed",
+            &[("Allow", allow.into())],
+            b"Method Not Allowed",
+        );
+        return;
+    }
+
+    // Upload-only: block downloads of shared content
+    if upload.map(|u| u.upload_only).unwrap_or(false) {
+        // Still allow the index to point at upload
+        if decoded == "/" || decoded.is_empty() || decoded == "." {
+            let html = if upload.is_some() {
+                format!(
+                    r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>http-share</title>
+<style>body{{font-family:system-ui,sans-serif;margin:2rem}}</style></head>
+<body><h1>Upload only</h1>
+<p><a href="/upload">Upload a file…</a></p>
+<footer>http-share</footer></body></html>"#
+                )
+            } else {
+                "Not Found".into()
+            };
             let headers = [
-                ("Content-Type", "application/x-pem-file".into()),
-                ("Content-Length", pem.len().to_string()),
-                ("Content-Disposition", "attachment; filename=\"certificate.pem\"".into()),
+                ("Content-Type", "text/html; charset=utf-8".into()),
+                ("Content-Length", html.len().to_string()),
                 ("Cache-Control", "no-store".into()),
             ];
-            if method == "HEAD" {
-                let _ = write_response(stream, 200, "OK", &headers, b"");
-            } else {
-                let _ = write_response(stream, 200, "OK", &headers, pem);
-            }
+            let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
             return;
         }
+        let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
+        return;
     }
 
     let head_only = method == "HEAD";
     let range_header = headers.get("range").map(|s| s.as_str());
+    let show_upload = upload.is_some();
 
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
-            let html = listing_html(vfs, "/", None);
+            let html = listing_html(vfs, "/", None, show_upload);
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -723,7 +1085,7 @@ fn handle_request(
             }
         }
         Some(Resolved::Dir(real, virt)) => {
-            let html = listing_html(vfs, &virt, Some(&real));
+            let html = listing_html(vfs, &virt, Some(&real), show_upload);
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -741,30 +1103,155 @@ fn handle_request(
     }
 }
 
+fn handle_upload(
+    body: &[u8],
+    headers: &HashMap<String, String>,
+    uc: &UploadConfig,
+    verbose: bool,
+) -> Result<PathBuf, String> {
+    if let Some(max) = uc.max_size {
+        if body.len() as u64 > max {
+            return Err(format!(
+                "upload too large ({} bytes, max {} bytes)",
+                body.len(),
+                max
+            ));
+        }
+    }
+
+    let ct = headers
+        .get("content-type")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let boundary = multipart_boundary(ct)
+        .ok_or_else(|| "expected multipart/form-data with boundary".to_string())?;
+
+    let (raw_name, data) = parse_multipart_file(body, &boundary)?;
+    if data.is_empty() {
+        return Err("empty file".into());
+    }
+    if let Some(max) = uc.max_size {
+        if data.len() as u64 > max {
+            return Err(format!(
+                "file too large ({} bytes, max {} bytes)",
+                data.len(),
+                max
+            ));
+        }
+    }
+
+    let filename = sanitize_filename(&raw_name)
+        .ok_or_else(|| format!("invalid filename: {raw_name:?}"))?;
+    let dest = unique_dest(&uc.dir, &filename, uc.allow_overwrite);
+
+    // Write via temp then rename for atomicity where possible
+    let tmp = uc.dir.join(format!(
+        ".upload-{}.tmp",
+        random_token(8)
+    ));
+    {
+        let mut f = File::create(&tmp).map_err(|e| format!("create: {e}"))?;
+        f.write_all(&data).map_err(|e| format!("write: {e}"))?;
+        f.sync_all().ok();
+    }
+    fs::rename(&tmp, &dest).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("rename: {e}")
+    })?;
+
+    if verbose {
+        eprintln!("  uploaded {} ({} bytes)", dest.display(), data.len());
+    }
+    Ok(dest)
+}
+
+fn read_http_message(stream: &mut dyn Read, max_body: u64) -> Option<(String, Vec<u8>)> {
+    let mut buf = Vec::with_capacity(8192);
+    let mut tmp = [0u8; 4096];
+    // Read until header terminator
+    loop {
+        let n = match stream.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => return None,
+        };
+        buf.extend_from_slice(&tmp[..n]);
+        if find_bytes(&buf, b"\r\n\r\n").is_some() {
+            break;
+        }
+        if buf.len() > 64 * 1024 {
+            return None; // headers too large
+        }
+    }
+    let header_end = find_bytes(&buf, b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+    let mut body = buf[header_end + 4..].to_vec();
+
+    // Content-Length
+    let mut content_length: Option<usize> = None;
+    for line in head.lines().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                content_length = v.trim().parse().ok();
+            }
+        }
+    }
+
+    if let Some(cl) = content_length {
+        if cl as u64 > max_body {
+            // Still try to drain? Just reject with empty body marker — caller checks size
+            return Some((head, body)); // body may be partial; handle_upload checks max
+        }
+        while body.len() < cl {
+            let n = match stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            body.extend_from_slice(&tmp[..n]);
+            if body.len() > max_body as usize {
+                break;
+            }
+        }
+        if body.len() > cl {
+            body.truncate(cl);
+        }
+    }
+    Some((head, body))
+}
+
 fn handle_client_plain(
     mut stream: TcpStream,
     vfs: &Vfs,
     verbose: bool,
     auth: Option<(String, String)>,
     cert_pem: Option<Vec<u8>>,
+    upload: Option<UploadConfig>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
 
-    let mut buf = [0u8; 8192];
-    let n = match stream.read(&mut buf) {
-        Ok(0) | Err(_) => return,
-        Ok(n) => n,
+    let max_body = upload
+        .as_ref()
+        .and_then(|u| u.max_size)
+        .unwrap_or(256 * 1024 * 1024); // 256 MiB default cap when unlimited
+    let (head, body) = match read_http_message(&mut stream, max_body) {
+        Some(x) => x,
+        None => return,
     };
-    let req = String::from_utf8_lossy(&buf[..n]);
     let auth_ref = auth.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
     handle_request(
         &mut stream,
-        &req,
+        &head,
+        &body,
         vfs,
         verbose,
         auth_ref,
         cert_pem.as_deref(),
+        upload.as_ref(),
     );
 }
 
@@ -775,8 +1262,9 @@ fn handle_client_tls(
     auth: Option<(String, String)>,
     cert_pem: Option<Vec<u8>>,
     tls_config: Arc<ServerConfig>,
+    upload: Option<UploadConfig>,
 ) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
 
     let conn = match rustls::ServerConnection::new(tls_config) {
@@ -790,14 +1278,25 @@ fn handle_client_tls(
     };
     let mut tls = rustls::StreamOwned::new(conn, stream);
 
-    let mut buf = [0u8; 8192];
-    let n = match tls.read(&mut buf) {
-        Ok(0) | Err(_) => return,
-        Ok(n) => n,
+    let max_body = upload
+        .as_ref()
+        .and_then(|u| u.max_size)
+        .unwrap_or(256 * 1024 * 1024);
+    let (head, body) = match read_http_message(&mut tls, max_body) {
+        Some(x) => x,
+        None => return,
     };
-    let req = String::from_utf8_lossy(&buf[..n]);
     let auth_ref = auth.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
-    handle_request(&mut tls, &req, vfs, verbose, auth_ref, cert_pem.as_deref());
+    handle_request(
+        &mut tls,
+        &head,
+        &body,
+        vfs,
+        verbose,
+        auth_ref,
+        cert_pem.as_deref(),
+        upload.as_ref(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,7 +1840,17 @@ fn main() {
         for (n, p) in &vfs.dirs {
             eprintln!("  dir   /{n}/ → {}", p.display());
         }
+        if let Some(ref d) = args.incoming {
+            eprintln!("  incoming uploads → {}", d.display());
+        }
     }
+
+    let upload_cfg: Option<UploadConfig> = args.incoming.as_ref().map(|dir| UploadConfig {
+        dir: dir.clone(),
+        max_size: args.max_upload_size,
+        allow_overwrite: args.allow_overwrite,
+        upload_only: args.upload_only,
+    });
 
     let auth: Option<(String, String)> = if args.public {
         None
@@ -1457,6 +1966,15 @@ fn main() {
     if args.https {
         println!("  certificate available at {scheme}://…/certificate.pem");
     }
+    if let Some(ref uc) = upload_cfg {
+        println!("  uploads: {} → {}", 
+            if uc.upload_only { "only" } else { "enabled" },
+            uc.dir.display());
+        if let Some(max) = uc.max_size {
+            println!("  max upload size: {max} bytes");
+        }
+        println!("  upload form: {scheme}://…/upload");
+    }
     if args.open {
         if let Some(ref url) = primary_url {
             open_browser(url);
@@ -1488,11 +2006,12 @@ fn main() {
                 let auth = auth.clone();
                 let cert_pem = cert_pem.clone();
                 let tls_config = tls_config.clone();
+                let upload = upload_cfg.clone();
                 thread::spawn(move || {
                     if let Some(cfg) = tls_config {
-                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg);
+                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload);
                     } else {
-                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem);
+                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload);
                     }
                 });
             }
