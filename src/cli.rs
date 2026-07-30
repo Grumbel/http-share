@@ -8,7 +8,6 @@ use std::time::Duration;
 
 pub(crate) const VERSION: &str = env!("HTTP_SHARE_VERSION");
 
-
 pub(crate) struct Args {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) port: u16,
@@ -34,7 +33,6 @@ pub(crate) struct Args {
     pub(crate) max_downloads: Option<u64>,
     pub(crate) max_uploads: Option<u64>,
 }
-
 
 pub(crate) fn print_usage(program: &str) {
     eprintln!(
@@ -383,11 +381,6 @@ pub(crate) fn random_token(len: usize) -> String {
         .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Virtual filesystem
-// ---------------------------------------------------------------------------
-
 
 #[cfg(test)]
 mod tests {

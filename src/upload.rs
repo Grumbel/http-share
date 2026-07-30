@@ -136,8 +136,6 @@ pub(crate) fn parse_multipart_file(body: &[u8], boundary: &str) -> Result<(Strin
     Err("multipart: no file field found".into())
 }
 
-
-
 #[derive(Clone)]
 pub(crate) struct UploadConfig {
     pub(crate) dir: PathBuf,
@@ -147,7 +145,6 @@ pub(crate) struct UploadConfig {
 }
 
 /// Shared lifetime / transfer limits. Any thread may call record_* after success.
-
 
 pub(crate) fn handle_upload(
     body: &[u8],

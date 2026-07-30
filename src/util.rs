@@ -92,7 +92,6 @@ pub(crate) fn format_bytes(n: u64) -> String {
     }
 }
 
-
 pub(crate) fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     let header = header.strip_prefix("bytes=")?;
     let header = header.split(',').next()?.trim();
@@ -139,9 +138,7 @@ pub(crate) fn parse_query(q: &str) -> HashMap<String, String> {
     map
 }
 
-/// Accept Basic Auth header, query credentials (`user`/`password` or `u`/`p`),
-/// or the `http_share_auth` session cookie set after a successful query-auth.
-
+/// Percent-encode a single URL path/query component (RFC 3986 unreserved left as-is).
 pub(crate) fn url_encode_component(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -155,10 +152,6 @@ pub(crate) fn url_encode_component(s: &str) -> String {
     out
 }
 
-
-// ---------------------------------------------------------------------------
-// Minimal QR code (byte mode, ECC level L) — pure Rust, no extra deps
-
 pub(crate) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -167,7 +160,6 @@ pub(crate) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .windows(needle.len())
         .position(|w| w == needle)
 }
-
 
 #[cfg(test)]
 mod tests {

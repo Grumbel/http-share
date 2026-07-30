@@ -27,7 +27,6 @@ pub(crate) fn check_basic_auth(headers: &HashMap<String, String>, user: &str, pa
     u == user && p == pass
 }
 
-
 pub(crate) fn check_auth(
     headers: &HashMap<String, String>,
     query: &HashMap<String, String>,
@@ -146,7 +145,6 @@ pub(crate) fn unauthorized(stream: &mut dyn Write) -> io::Result<()> {
         b"Unauthorized",
     )
 }
-
 
 #[cfg(test)]
 mod tests {

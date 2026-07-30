@@ -208,23 +208,8 @@ impl Vfs {
         }
 
         if let Some(dir_root) = self.dirs.get(first) {
-            // Skip dirs that are "shared" CLI dirs — those only under /pub/
-            // Exception: explicit extra mounts (incoming) are in dirs and not in a separate set.
-            // Convention: CLI shared dirs and files are only exposed via resolve_shared.
-            // Extra mounts are also in self.dirs. We distinguish by: only `incoming` (and future
-            // mounts) are reachable outside /pub/. Shared CLI dir names are ALSO in dirs, so
-            // we must not serve them at /<name> — only at /pub/<name>.
-            // Rule: top-level path is allowed only if it is NOT a shared CLI file/dir name
-            // that we're protecting... Actually both shared dirs and incoming are in dirs.
-            // Fix: track mount names separately, OR: shared paths only via /pub/, and
-            // for non-pub paths only allow known mount names (incoming).
-            // Simplest: when resolving outside /pub/, only look up dirs that are "extra mounts".
-            // We store extra mounts in a set, or check name == "incoming".
-            // Current add_dir is only used for incoming. Shared dirs are inserted in from_paths.
-            // For non-pub resolution, require first component to be an extra mount.
-            // Heuristic: if first is a shared file basename, deny. If first is in dirs, allow
-            // only when it was added via add_dir. Track with `extra_dirs: HashSet<String>`.
-            // Minimal change: only allow "incoming" outside /pub/ for now.
+            // Outside /pub/, only the explicit "incoming" mount is reachable.
+            // Shared CLI dirs live under /pub/ via resolve_shared().
             if first != "incoming" {
                 return None;
             }
@@ -318,11 +303,6 @@ pub(crate) enum Resolved {
     File(PathBuf),
     Dir(PathBuf, String),
 }
-
-// ---------------------------------------------------------------------------
-// HTTP helpers
-// ---------------------------------------------------------------------------
-
 
 #[cfg(test)]
 mod tests {

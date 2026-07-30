@@ -25,20 +25,18 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use rustls::ServerConfig;
+
+use auth::build_share_url;
 use cli::parse_args;
 use net::{host_for_url, is_ipv6, is_loopback, local_ips, open_browser};
 use qr::qr_print;
 use server::{handle_client_plain, handle_client_tls};
-use state::{LifetimeState, TransferStats};
-use rustls::ServerConfig;
+use state::{CTRL_C_RUNNING, LifetimeState, TransferStats};
 use tls::{load_or_create_cert, make_tls_config};
 use upload::UploadConfig;
-use vfs::Vfs;
-
-use auth::build_share_url;
 use util::url_encode_component;
-
-use state::CTRL_C_RUNNING;
+use vfs::Vfs;
 
 #[cfg(unix)]
 extern "C" fn sigint_handler(_: i32) {
@@ -57,10 +55,6 @@ fn install_ctrlc_handler() {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 fn main() {
     let args = parse_args();
