@@ -23,17 +23,27 @@ Task tracking: `TODO.md`.
 ## Layout
 
 ```
-src/main.rs     # entire application (single file by design)
-Cargo.toml      # pinned deps for rustc 1.75
-Cargo.lock
-flake.nix       # Nix package / app / devShell / checks
-PROPOSAL.md     # product design
-TODO.md         # phased checklist + current status
-AGENTS.md       # this file
-VERSION         # sole product version (see Version Number Handling)
+src/
+  main.rs       # entry point, accept loop, signal handler
+  cli.rs        # Args, parse_args, print_usage, duration/size parsers
+  vfs.rs        # virtual filesystem (/pub/, /incoming/), path safety
+  util.rs       # percent-encoding, mime, ranges, query parse, helpers
+  auth.rs       # Basic / query / cookie auth
+  html.rs       # landing, listings, upload form HTML
+  http_io.rs    # write_response, serve_file, read_http_message
+  upload.rs     # multipart parser, sanitize, unique names
+  state.rs      # LifetimeState, TransferStats, CTRL_C_RUNNING
+  server.rs     # handle_request, plain/TLS client workers
+  tls.rs        # self-signed cert load/generate, rustls config
+  net.rs        # LAN IP detection, open browser
+  qr.rs         # pure-Rust QR encoder
+Cargo.toml / Cargo.lock / build.rs / VERSION / flake.nix
+PROPOSAL.md / TODO.md / AGENTS.md / README.md
 ```
 
-Keep the single-file style unless a change clearly benefits from a module split.
+Prefer **small modules** over a single giant `main.rs` so agents and humans can
+read, test, and change one concern at a time. Unit tests live in `#[cfg(test)]`
+modules next to the code they cover (`cargo test`).
 
 ## Architecture (main.rs)
 
