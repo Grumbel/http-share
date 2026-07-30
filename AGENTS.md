@@ -30,6 +30,7 @@ flake.nix       # Nix package / app / devShell / checks
 PROPOSAL.md     # product design
 TODO.md         # phased checklist + current status
 AGENTS.md       # this file
+VERSION         # sole product version (see Version Number Handling)
 ```
 
 Keep the single-file style unless a change clearly benefits from a module split.
@@ -107,6 +108,81 @@ Nix: `nix build` / `nix run` (flake present; may be unavailable in some agent en
    - GET/POST /upload with simple HTML form; link from listings
    - Never overwrite by default (unique -N suffix); --allow-overwrite opt-in
    ```
+
+
+
+## Version Number Handling
+
+Single source of truth: top-level **`VERSION`** file (e.g. `0.1.0-dev`).  
+Do **not** hard-code the product version elsewhere; derive it at build time.
+
+### Rules
+
+* **`VERSION` is the only source of truth.** No duplicated version strings in docs or source that can drift.
+* **In git (development):** the version always carries a `-dev` suffix (e.g. `0.1.0-dev`).
+* **At release:** strip `-dev`, commit `VERSION` (e.g. `0.1.0`), tag the tree as **`v` + VERSION** (e.g. `v0.1.0`). The tag must match `VERSION` with a leading `v`.
+* **`--version` CLI flag** must print the product version (from `VERSION` / build embedding). GUI About dialogs, if any, use the same string.
+* **`Cargo.toml` `package.version`:** Cargo requires a version field. Prefer keeping it equal to the base in `VERSION` (without flake’s `+g…` suffix) via the release workflow. Runtime/`--version` must **not** rely on `CARGO_PKG_VERSION` alone — embed from `VERSION` through `build.rs` so the file remains authoritative even if Cargo.toml lags.
+* **`flake.nix`:** read `VERSION`, then append the short git revision when available (Nix `self.shortRev` / `dirtyShortRev`), e.g. `0.1.0-dev+gd910b1c` or `0.1.0-dev+gfb40b2c-dirty`.
+
+### How it flows (Rust)
+
+| Layer | Behavior |
+|-------|----------|
+| `VERSION` | One line, e.g. `0.1.0-dev` |
+| `build.rs` | Reads `VERSION`, sets `cargo:rustc-env=HTTP_SHARE_VERSION=…`, `rerun-if-changed=VERSION` |
+| `src/main.rs` | `const VERSION: &str = env!("HTTP_SHARE_VERSION");` and `--version` prints it |
+| `Cargo.toml` | `version` kept in sync with `VERSION` at release (no `+g` git suffix) |
+| `flake.nix` | `versionBase` from `VERSION`; package/app version = `"${versionBase}+g${gitRev}"` |
+
+Nix may pass an override (e.g. full `version` with `+g…`) into the build via `HTTP_SHARE_VERSION` env if packaging needs the dirty/rev suffix in the binary; otherwise the binary shows the clean `VERSION` line and only the Nix package name/version carries `+g…`. Prefer one consistent policy: either binary always matches `VERSION`, or binary matches flake’s expanded version when built under Nix. Document the choice in the flake comment.
+
+### `build.rs` example
+
+```rust
+// build.rs — embed VERSION as HTTP_SHARE_VERSION for --version
+fn main() {
+    let version = std::fs::read_to_string("VERSION")
+        .expect("VERSION file missing")
+        .lines()
+        .next()
+        .unwrap_or("0.0.0-dev")
+        .trim()
+        .to_string();
+    println!("cargo:rustc-env=HTTP_SHARE_VERSION={version}");
+    println!("cargo:rerun-if-changed=VERSION");
+}
+```
+
+### CLI example
+
+```rust
+// in parse_args / flag handling
+"--version" | "-V" => {
+    println!("http-share {}", env!("HTTP_SHARE_VERSION"));
+    std::process::exit(0);
+}
+```
+
+### `flake.nix` example
+
+```nix
+pkgs = nixpkgs.legacyPackages.${system};
+lib = pkgs.lib;
+versionBase = lib.strings.removeSuffix "\n" (builtins.readFile ./VERSION);
+gitRev = "${self.shortRev or self.dirtyShortRev or "dirty"}";
+version = "${versionBase}+g${gitRev}";
+# use `version` for package version; optionally pass versionBase or version
+# into the crate build via env for --version
+```
+
+### Release checklist
+
+1. Set `VERSION` to the release number **without** `-dev` (e.g. `0.1.0`).
+2. Align `Cargo.toml` `package.version` with that same number.
+3. Commit (`Release 0.1.0` or similar).
+4. Tag `v0.1.0` (always `v` + contents of `VERSION`).
+5. On the next commit, set `VERSION` back to `0.2.0-dev` (or the next `-dev` line) so mainline stays marked development.
 
 ## Testing habits
 
