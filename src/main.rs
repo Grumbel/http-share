@@ -1,8 +1,8 @@
 //! http-share — minimal HTTP(S) file sharing utility for ad-hoc transfers.
 //!
 //! Only files and directories given on the command line are exposed.
-//! Virtual root is `/`; individual files land at the root by basename;
-//! directories keep their hierarchy under their basename.
+//! FTP-style URL layout: shared paths under `/pub/`, uploads under `/incoming/`,
+//! landing page at `/`.
 
 use std::collections::HashMap;
 use std::env;
@@ -57,41 +57,55 @@ fn print_usage(program: &str) {
 Share only the files and directories you explicitly list.
 Never exposes the current working directory implicitly.
 
-Options:
+Shared files are served under /pub/ (FTP-style). Uploads go to /incoming/.
+
+Network:
   -p, --port PORT          Port to listen on (default: 8000)
       --bind ADDRESS       Address to bind (default: 0.0.0.0)
   -v, --verbose            Verbose logging
-      --follow-symlinks    Follow symbolic links
+      --open               Open primary share URL in the default browser
+      --qr                 Print a terminal QR code (query-auth URL when auth is on)
+
+Share selection:
+      --follow-symlinks    Follow symbolic links when sharing paths
+
+Authentication:
       --public             Disable authentication
-      --user USER          Username for Basic Auth
-      --password PASS      Password for Basic Auth
+      --user USER          Username for Basic Auth / query auth
+      --password PASS      Password for Basic Auth / query auth
       --random-password    Generate random credentials (default when not --public)
+
+TLS:
       --https              Serve over HTTPS with a self-signed certificate
       --http               Serve plain HTTP (default)
       --dynamic-cert       Use an ephemeral certificate (not stored)
       --regenerate-cert    Replace the persistent self-signed certificate
-      --open               Open primary share URL in the default browser
-      --qr                 Print a terminal QR code of the primary URL
-      --incoming DIR       Accept uploads into DIR (also browsable at /incoming/)
-      --upload-only        Only accept uploads (no downloads of shared paths)
+
+Uploads:
+      --incoming DIR       Accept uploads into DIR (browsable at /incoming/)
+      --upload-only        Only accept uploads (no /pub/ downloads)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
       --no-browse-uploads  Do not expose uploaded files under /incoming/
+
+Lifetime:
       --one-shot           Stop after the first successful download or upload
       --expire DURATION    Stop after DURATION (e.g. 30s, 5m, 1h)
       --max-downloads N    Stop after N successful file downloads
       --max-uploads N      Stop after N successful uploads
+
   -h, --help               Print help
 
-URL layout:
-  /                  Shared files (CLI paths) + links
-  /<name>            Shared file or directory
-  /incoming/         Uploaded files (when --incoming and not --no-browse-uploads)
+URL layout (FTP-style):
+  /                  Landing page with links
+  /pub/              Shared files (CLI paths)
+  /pub/<name>        Shared file or directory
+  /incoming/         Uploaded files (when --incoming, unless --no-browse-uploads)
   /upload            Upload form (when --incoming)
   /certificate.pem   HTTPS server certificate (when --https)
 
-Auth: HTTP Basic Auth, or query parameters ?user=…&password=… (for QR scanners
-that do not support userinfo in URLs).
+Auth: HTTP Basic Auth, or query parameters ?user=…&password=… (or ?u=…&p=…)
+for QR scanners that do not support userinfo in URLs. --qr uses the query form.
 "
     );
 }
@@ -551,29 +565,61 @@ impl Vfs {
         Some(cur)
     }
 
+    /// Resolve a request path.
+    /// Shared CLI paths live under `/pub/`. Extra mounts (e.g. `incoming`) stay at their name.
     fn resolve(&self, req_path: &str) -> Option<Resolved> {
         let req_path = req_path.trim_start_matches('/');
         if req_path.is_empty() || req_path == "." {
             return Some(Resolved::Index);
         }
 
-        // Null / backslash anywhere in the request path
         if req_path.contains('\0') || req_path.contains('\\') {
             return None;
         }
 
-        // Exact file at virtual root (basename only — no slash)
-        if !req_path.contains('/') {
-            if let Some(real) = self.files.get(req_path) {
-                return Some(Resolved::File(real.clone()));
-            }
+        // /pub and /pub/ → listing of shared CLI paths
+        if req_path == "pub" {
+            return Some(Resolved::PubIndex);
         }
 
+        // /pub/<rest> → shared file or directory
+        if let Some(rest) = req_path.strip_prefix("pub/") {
+            return self.resolve_shared(rest);
+        }
+
+        // Other top-level mounts (e.g. incoming) and their children
         let mut parts = req_path.splitn(2, '/');
         let first = parts.next()?;
         let rest = parts.next().unwrap_or("");
 
+        // Do not allow shared file names at virtual root (they are under /pub/)
+        if rest.is_empty() {
+            if self.files.contains_key(first) {
+                return None;
+            }
+        }
+
         if let Some(dir_root) = self.dirs.get(first) {
+            // Skip dirs that are "shared" CLI dirs — those only under /pub/
+            // Exception: explicit extra mounts (incoming) are in dirs and not in a separate set.
+            // Convention: CLI shared dirs and files are only exposed via resolve_shared.
+            // Extra mounts are also in self.dirs. We distinguish by: only `incoming` (and future
+            // mounts) are reachable outside /pub/. Shared CLI dir names are ALSO in dirs, so
+            // we must not serve them at /<name> — only at /pub/<name>.
+            // Rule: top-level path is allowed only if it is NOT a shared CLI file/dir name
+            // that we're protecting... Actually both shared dirs and incoming are in dirs.
+            // Fix: track mount names separately, OR: shared paths only via /pub/, and
+            // for non-pub paths only allow known mount names (incoming).
+            // Simplest: when resolving outside /pub/, only look up dirs that are "extra mounts".
+            // We store extra mounts in a set, or check name == "incoming".
+            // Current add_dir is only used for incoming. Shared dirs are inserted in from_paths.
+            // For non-pub resolution, require first component to be an extra mount.
+            // Heuristic: if first is a shared file basename, deny. If first is in dirs, allow
+            // only when it was added via add_dir. Track with `extra_dirs: HashSet<String>`.
+            // Minimal change: only allow "incoming" outside /pub/ for now.
+            if first != "incoming" {
+                return None;
+            }
             if rest.is_empty() {
                 return Some(Resolved::Dir(dir_root.clone(), first.to_string()));
             }
@@ -583,7 +629,6 @@ impl Vfs {
             if meta.is_file()
                 || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_file()).unwrap_or(false))
             {
-                // Ensure we open a regular file, not a remaining symlink when disallowed
                 if !self.follow_symlinks && meta.file_type().is_symlink() {
                     return None;
                 }
@@ -598,11 +643,70 @@ impl Vfs {
 
         None
     }
+
+    /// Resolve a path relative to the shared CLI virtual root (under /pub/).
+    fn resolve_shared(&self, rest: &str) -> Option<Resolved> {
+        let rest = rest.trim_start_matches('/');
+        if rest.is_empty() || rest == "." {
+            return Some(Resolved::PubIndex);
+        }
+        if rest.contains('\0') || rest.contains('\\') {
+            return None;
+        }
+
+        // Exact file (basename)
+        if !rest.contains('/') {
+            if let Some(real) = self.files.get(rest) {
+                return Some(Resolved::File(real.clone()));
+            }
+        }
+
+        let mut parts = rest.splitn(2, '/');
+        let first = parts.next()?;
+        let sub = parts.next().unwrap_or("");
+
+        if let Some(dir_root) = self.dirs.get(first) {
+            // Shared CLI dir: exclude the incoming mount from /pub/
+            if first == "incoming" {
+                return None;
+            }
+            if sub.is_empty() {
+                return Some(Resolved::Dir(
+                    dir_root.clone(),
+                    format!("pub/{first}"),
+                ));
+            }
+            let components = Self::validate_components(sub)?;
+            let resolved = self.safe_join(dir_root, &components)?;
+            let meta = fs::symlink_metadata(&resolved).ok()?;
+            if meta.is_file()
+                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_file()).unwrap_or(false))
+            {
+                if !self.follow_symlinks && meta.file_type().is_symlink() {
+                    return None;
+                }
+                return Some(Resolved::File(resolved));
+            }
+            if meta.is_dir()
+                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false))
+            {
+                return Some(Resolved::Dir(
+                    resolved,
+                    format!("pub/{rest}"),
+                ));
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Debug)]
 enum Resolved {
+    /// Site landing page at `/`
     Index,
+    /// Listing of shared CLI paths at `/pub/`
+    PubIndex,
     File(PathBuf),
     Dir(PathBuf, String),
 }
@@ -700,6 +804,56 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
+
+fn landing_html(show_upload: bool, show_cert: bool, has_shared: bool, has_incoming: bool) -> String {
+    let mut links = String::new();
+    if has_shared {
+        links.push_str(r#"<li><a href="/pub/" class="dir">pub/</a><span class="desc">Shared files</span></li>"#);
+    }
+    if has_incoming {
+        links.push_str(r#"<li><a href="/incoming/" class="dir">incoming/</a><span class="desc">Uploaded files</span></li>"#);
+    }
+    if show_upload {
+        links.push_str(r#"<li><a href="/upload">upload</a><span class="desc">Upload a file</span></li>"#);
+    }
+    if show_cert {
+        links.push_str(r#"<li><a href="/certificate.pem">certificate.pem</a><span class="desc">TLS certificate</span></li>"#);
+    }
+    if links.is_empty() {
+        links.push_str(r#"<li style="color:#888">Nothing shared</li>"#);
+    }
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>http-share</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; color: #222; }}
+  h1 {{ font-size: 1.3rem; }}
+  ul {{ list-style: none; padding: 0; margin: 1.5rem 0 0; }}
+  li {{ padding: 0.4rem 0; border-bottom: 1px solid #eee; display: flex; gap: 1rem; }}
+  a {{ color: #06c; text-decoration: none; font-weight: 600; }}
+  a:hover {{ text-decoration: underline; }}
+  .dir {{ }}
+  .desc {{ color: #666; font-weight: normal; }}
+  footer {{ margin-top: 2rem; font-size: 0.85rem; color: #888; }}
+</style>
+</head>
+<body>
+<h1>http-share</h1>
+<p>FTP-style paths: <code>/pub/</code> for shared files, <code>/incoming/</code> for uploads.</p>
+<ul>
+{links}
+</ul>
+<footer>http-share</footer>
+</body>
+</html>"#,
+        links = links
+    )
+}
+
 /// Listing entry: (href, display name, is_dir, optional size string)
 fn listing_html(
     vfs: &Vfs,
@@ -746,20 +900,29 @@ fn listing_html(
             }
         }
     } else {
+        // Virtual listing (e.g. /pub/): shared CLI files + dirs, skip extra mounts
+        let prefix = if virt_path.is_empty() || virt_path == "/" {
+            String::new()
+        } else {
+            format!("/{}", virt_path.trim_matches('/'))
+        };
         for (name, path) in &vfs.files {
             let size_label = fs::metadata(path)
                 .map(|m| format_bytes(m.len()))
                 .unwrap_or_default();
             items.push((
-                format!("/{}", encode_path_component(name)),
+                format!("{prefix}/{}", encode_path_component(name)),
                 name.clone(),
                 false,
                 size_label,
             ));
         }
         for name in vfs.dirs.keys() {
+            if name == "incoming" {
+                continue; // extra mount, not part of /pub/
+            }
             items.push((
-                format!("/{}/", encode_path_component(name)),
+                format!("{prefix}/{}/", encode_path_component(name)),
                 format!("{name}/"),
                 true,
                 String::new(),
@@ -775,7 +938,9 @@ fn listing_html(
         }
     });
 
-    let title = if virt_path == "/" || virt_path.is_empty() {
+    let title = if virt_path == "pub" {
+        "pub"
+    } else if virt_path == "/" || virt_path.is_empty() {
         "Shared files"
     } else {
         virt_path.trim_matches('/')
@@ -844,14 +1009,17 @@ fn listing_html(
     body.push_str(r#"</ul>"#);
 
     let mut nav = Vec::new();
+    if virt_path != "/" && !virt_path.is_empty() {
+        nav.push(r#"<a href="/">Home</a>"#);
+    }
+    if virt_path != "pub" {
+        nav.push(r#"<a href="/pub/">Browse /pub/</a>"#);
+    }
     if show_upload {
         nav.push(r#"<a href="/upload">Upload a file…</a>"#);
     }
-    if virt_path != "/" && !virt_path.is_empty() {
-        nav.push(r#"<a href="/">Shared files</a>"#);
-    }
-    if (virt_path == "/" || virt_path.is_empty()) && vfs.dirs.contains_key("incoming") {
-        nav.push(r#"<a href="/incoming/">Uploaded files</a>"#);
+    if vfs.dirs.contains_key("incoming") && !virt_path.starts_with("incoming") {
+        nav.push(r#"<a href="/incoming/">Browse /incoming/</a>"#);
     }
     if show_cert {
         nav.push(r#"<a href="/certificate.pem">Download certificate.pem</a>"#);
@@ -1098,7 +1266,7 @@ fn upload_form_html() -> String {
 </head>
 <body>
 <h1>Upload a file</h1>
-<p><a href="/">← Shared files</a></p>
+<p><a href="/">← Home</a> · <a href="/pub/">/pub/</a></p>
 <form method="POST" action="/upload" enctype="multipart/form-data">
   <input type="file" name="file" required>
   <button type="submit">Upload</button>
@@ -1107,8 +1275,15 @@ fn upload_form_html() -> String {
 </html>"#.to_string()
 }
 
-fn upload_result_html(ok: bool, message: &str) -> String {
+fn upload_result_html(ok: bool, message: &str, browse_href: Option<&str>) -> String {
     let cls = if ok { "msg" } else { "msg err" };
+    let file_link = match browse_href {
+        Some(href) if ok => format!(
+            r#"<p><a href="{}">Open uploaded file</a> · <a href="/incoming/">Browse /incoming/</a></p>"#,
+            html_escape(href)
+        ),
+        _ => String::new(),
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -1126,12 +1301,14 @@ fn upload_result_html(ok: bool, message: &str) -> String {
 </head>
 <body>
 <h1>Upload</h1>
-<p><a href="/upload">Upload another</a> · <a href="/">Shared files</a></p>
+<p><a href="/upload">Upload another</a> · <a href="/">Home</a> · <a href="/pub/">/pub/</a></p>
 <div class="{cls}">{msg}</div>
+{file_link}
 </body>
 </html>"#,
         cls = cls,
-        msg = html_escape(message)
+        msg = html_escape(message),
+        file_link = file_link
     )
 }
 
@@ -1504,7 +1681,7 @@ fn handle_request(
             }
             if method == "POST" {
                 let result = handle_upload(body, &headers, uc, verbose);
-                let (ok, msg) = match result {
+                let (ok, msg, browse_href) = match result {
                     Ok((path, nbytes)) => {
                         if let Some(lt) = lifetime {
                             lt.record_upload();
@@ -1515,11 +1692,20 @@ fn handle_request(
                         if verbose {
                             eprintln!("  upload {} ({} bytes)", path.display(), nbytes);
                         }
-                        (true, format!("Saved as {} ({} bytes)", path.display(), nbytes))
+                        let name = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let href = format!("/incoming/{}", encode_path_component(&name));
+                        (
+                            true,
+                            format!("Saved as {name} ({} bytes)", nbytes),
+                            Some(href),
+                        )
                     }
-                    Err(e) => (false, e),
+                    Err(e) => (false, e, None),
                 };
-                let html = upload_result_html(ok, &msg);
+                let html = upload_result_html(ok, &msg, browse_href.as_deref());
                 let status = if ok { 201 } else { 400 };
                 let reason = if ok { "Created" } else { "Bad Request" };
                 let headers = [
@@ -1550,51 +1736,43 @@ fn handle_request(
         return;
     }
 
-    // Upload-only: block downloads of shared CLI paths; still allow /incoming if mounted
+    // Upload-only: block /pub/ downloads; still allow / and /incoming
     if upload.map(|u| u.upload_only).unwrap_or(false) {
-        let is_incoming = decoded == "/incoming"
-            || decoded == "incoming"
-            || decoded.starts_with("/incoming/")
-            || decoded.starts_with("incoming/");
-        if decoded == "/" || decoded.is_empty() || decoded == "." {
-            let mut links = String::from(r#"<p><a href="/upload">Upload a file…</a>"#);
-            if vfs.dirs.contains_key("incoming") {
-                links.push_str(r#" · <a href="/incoming/">Uploaded files</a>"#);
-            }
-            if show_cert {
-                links.push_str(r#" · <a href="/certificate.pem">Download certificate.pem</a>"#);
-            }
-            links.push_str("</p>");
-            let html = format!(
-                r#"<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>http-share</title>
-<style>body{{font-family:system-ui,sans-serif;margin:2rem}} a{{color:#06c}}</style></head>
-<body><h1>Upload only</h1>
-{links}
-<footer>http-share</footer></body></html>"#
-            );
-            let headers = [
-                ("Content-Type", "text/html; charset=utf-8".into()),
-                ("Content-Length", html.len().to_string()),
-                ("Cache-Control", "no-store".into()),
-            ];
-            let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
-            return;
-        }
-        if !is_incoming {
+        let path_trim = decoded.trim_start_matches('/');
+        let is_pub = path_trim == "pub" || path_trim.starts_with("pub/");
+        if is_pub {
             let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
             return;
         }
-        // fall through to resolve /incoming/…
     }
 
     let head_only = method == "HEAD";
     let range_header = headers.get("range").map(|s| s.as_str());
     let show_upload = upload.is_some();
+    let has_shared = !vfs.files.is_empty()
+        || vfs.dirs.keys().any(|k| k != "incoming");
+    let has_incoming = vfs.dirs.contains_key("incoming");
 
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
-            let html = listing_html(vfs, "/", None, show_upload, show_cert);
+            let html = landing_html(show_upload, show_cert, has_shared, has_incoming);
+            let headers = [
+                ("Content-Type", "text/html; charset=utf-8".into()),
+                ("Content-Length", html.len().to_string()),
+                ("Cache-Control", "no-store".into()),
+            ];
+            if head_only {
+                let _ = write_response(stream, 200, "OK", &headers, b"");
+            } else {
+                let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
+            }
+        }
+        Some(Resolved::PubIndex) => {
+            if upload.map(|u| u.upload_only).unwrap_or(false) {
+                let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
+                return;
+            }
+            let html = listing_html(vfs, "pub", None, show_upload, show_cert);
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -2410,10 +2588,14 @@ fn main() {
             vfs.dirs.len()
         );
         for (n, p) in &vfs.files {
-            eprintln!("  file  /{n} → {}", p.display());
+            eprintln!("  file  /pub/{n} → {}", p.display());
         }
         for (n, p) in &vfs.dirs {
-            eprintln!("  dir   /{n}/ → {}", p.display());
+            if n == "incoming" {
+                eprintln!("  dir   /{n}/ → {}", p.display());
+            } else {
+                eprintln!("  dir   /pub/{n}/ → {}", p.display());
+            }
         }
         if let Some(ref d) = args.incoming {
             eprintln!(

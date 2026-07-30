@@ -39,7 +39,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 | Area | Notes |
 |------|--------|
 | CLI | `Args`, `parse_args()`, `print_usage()` — extend here for new flags |
-| VFS | `Vfs`, `Resolved` — virtual root `/`; files by basename; dirs keep hierarchy |
+| VFS | `Vfs`, `Resolved` — shared under `/pub/`; extra mounts (e.g. `incoming`); landing at `/` |
 | HTTP | Manual request parse; `handle_request`; range GETs; HTML listings |
 | TLS | Persistent self-signed cert under `~/.config/http-share/`; `--dynamic-cert` / `--regenerate-cert` |
 | Auth | HTTP Basic **or** query `?user=&password=` / `?u=&p=`; default random user `share`; `--public` disables |
@@ -52,7 +52,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 ### Important behaviors
 
 - **Paths:** at least one path **or** `--incoming DIR` required.
-- **URL layout:** CLI shares at `/<name>`; uploads at `/incoming/` (if browsing enabled); form at `/upload`; cert at `/certificate.pem`.
+- **URL layout (FTP-style):** `/` landing; CLI shares under `/pub/`; uploads under `/incoming/`; form at `/upload`; cert at `/certificate.pem`.
 - **URLs:** userinfo credentials in printed URLs; `--qr` uses `?user=&password=` (many Android QR readers drop userinfo).
 - **Listings:** show file sizes; link to cert download when HTTPS; link to `/incoming/` when mounted.
 - **Uploads:** basename-only filenames; reject `../`; unique `name-N.ext` unless `--allow-overwrite`.

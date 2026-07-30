@@ -84,9 +84,10 @@ Derived from PROPOSAL.md.
 - [x] `--no-browse-uploads` to hide uploaded files from the VFS
 - [x] Query-parameter auth (`?user=` / `?password=` or `?u=` / `?p=`) for QR / Android
 - [x] `--qr` encodes query-auth URL (not `user:pass@host` userinfo)
-- [ ] Optional stricter URL layout: shared files under `/share/` (or `/pub/`) instead of virtual root
-- [ ] Optional separate virtual root name for uploads (`/incoming/` is the current choice)
-- [ ] Post-upload result page: direct link to the new file under `/incoming/…`
+- [x] FTP-style URL layout: shared files under `/pub/`, uploads under `/incoming/`
+- [x] Landing page at `/` with links to pub / incoming / upload / cert
+- [x] Post-upload result page links to `/incoming/<file>`
+- [x] Grouped `--help` output (Network, Auth, TLS, Uploads, Lifetime, …)
 
 ## Design constraints (always)
 
@@ -103,7 +104,5 @@ Derived from PROPOSAL.md.
 - Phase 5 upload mode: `--incoming`, `/upload`, multipart, unique names, size limits.
 - Phase 6 lifetime: `--one-shot`, `--expire`, `--max-downloads`, `--max-uploads`.
 - Default: random Basic Auth credentials embedded in printed URLs.
-- Phase 8 (partial): sizes in listings, cert download link, `/incoming/` browse +
-  `--no-browse-uploads`, query-param auth + Android-friendly QR URLs.
-- URL layout today: CLI shares at `/<name>`, uploads at `/incoming/`, form at `/upload`,
-  cert at `/certificate.pem`. Full `/share/` prefix still optional (see Phase 8).
+- Phase 8 complete: FTP-style `/pub/` + `/incoming/`, landing page, sizes, cert link,
+  query-auth QR, grouped `--help`, post-upload file links.
