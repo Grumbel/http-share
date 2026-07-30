@@ -47,6 +47,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 | QR | Pure-Rust byte-mode ECC-L versions 1–6; `--qr` |
 | Shutdown | Non-blocking accept + SIGINT/SIGTERM → `CTRL_C_RUNNING` |
 | Lifetime | `LifetimeState` atomics; download/upload success or expire stops server |
+| Stats | `TransferStats` — counts + bytes; summary on shutdown |
 
 ### Important behaviors
 
@@ -56,6 +57,8 @@ Keep the single-file style unless a change clearly benefits from a module split.
 - **Upload-only:** shared path downloads return 404; index links to `/upload`.
 - **Body size:** `--max-upload-size` (e.g. `10M`); if unset, practical read cap is 256 MiB.
 - **Lifetime:** `--one-shot` / `--expire` / `--max-downloads` / `--max-uploads` clear `CTRL_C_RUNNING` after limits; directory listings and HEAD do not count as downloads.
+- **Path safety:** reject `..`, NUL, backslash; component walk with symlink_metadata; out-of-tree symlinks never served; root symlinks need `--follow-symlinks`.
+- **Stats:** `TransferStats` tracks download/upload counts and bytes; printed on shutdown.
 
 ## Build & run
 

@@ -371,6 +371,7 @@ fn random_token(len: usize) -> String {
 struct Vfs {
     files: HashMap<String, PathBuf>,
     dirs: HashMap<String, PathBuf>,
+    follow_symlinks: bool,
 }
 
 impl Vfs {
@@ -383,28 +384,43 @@ impl Vfs {
                 io::Error::new(e.kind(), format!("cannot access {}: {e}", p.display()))
             })?;
 
-            let path = if follow_symlinks || !meta.file_type().is_symlink() {
-                if follow_symlinks {
-                    p.canonicalize().map_err(|e| {
-                        io::Error::new(e.kind(), format!("canonicalize {}: {e}", p.display()))
-                    })?
-                } else if p.is_absolute() {
-                    p.clone()
-                } else {
-                    env::current_dir()?.join(p)
-                }
+            // Reject symlink roots unless --follow-symlinks
+            if meta.file_type().is_symlink() && !follow_symlinks {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "{} is a symbolic link (pass --follow-symlinks to allow)",
+                        p.display()
+                    ),
+                ));
+            }
+
+            let path = if follow_symlinks {
+                p.canonicalize().map_err(|e| {
+                    io::Error::new(e.kind(), format!("canonicalize {}: {e}", p.display()))
+                })?
             } else if p.is_absolute() {
                 p.clone()
             } else {
                 env::current_dir()?.join(p)
             };
 
+            // Use symlink_metadata so we classify without following
+            let final_meta = if follow_symlinks {
+                fs::metadata(&path)
+            } else {
+                fs::symlink_metadata(&path)
+            }
+            .map_err(|e| {
+                io::Error::new(e.kind(), format!("cannot stat {}: {e}", path.display()))
+            })?;
+
             let name = path
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "item".into());
 
-            if path.is_dir() {
+            if final_meta.is_dir() {
                 if files.contains_key(&name) || dirs.contains_key(&name) {
                     return Err(io::Error::new(
                         io::ErrorKind::AlreadyExists,
@@ -412,7 +428,7 @@ impl Vfs {
                     ));
                 }
                 dirs.insert(name, path);
-            } else if path.is_file() {
+            } else if final_meta.is_file() {
                 if files.contains_key(&name) || dirs.contains_key(&name) {
                     return Err(io::Error::new(
                         io::ErrorKind::AlreadyExists,
@@ -428,7 +444,83 @@ impl Vfs {
             }
         }
 
-        Ok(Vfs { files, dirs })
+        Ok(Vfs {
+            files,
+            dirs,
+            follow_symlinks,
+        })
+    }
+
+    /// Reject path components that can escape or confuse resolution.
+    fn validate_components(rest: &str) -> Option<Vec<&str>> {
+        if rest.contains('\0') || rest.contains('\\') {
+            return None;
+        }
+        let mut out = Vec::new();
+        for c in rest.split('/') {
+            if c.is_empty() || c == "." {
+                continue; // skip empty / current-dir segments
+            }
+            if c == ".." {
+                return None;
+            }
+            // No absolute-looking segments
+            if c.starts_with('/') {
+                return None;
+            }
+            out.push(c);
+        }
+        Some(out)
+    }
+
+    /// True if `child` is equal to `root` or strictly inside it (component-aware).
+    fn is_within(root: &Path, child: &Path) -> bool {
+        let root_c: Vec<_> = root.components().collect();
+        let child_c: Vec<_> = child.components().collect();
+        if child_c.len() < root_c.len() {
+            return false;
+        }
+        child_c
+            .iter()
+            .zip(root_c.iter())
+            .all(|(a, b)| a == b)
+    }
+
+    /// Walk `components` under `dir_root` without leaving the tree.
+    /// When `follow_symlinks` is false, any symlink component is rejected.
+    fn safe_join(&self, dir_root: &Path, components: &[&str]) -> Option<PathBuf> {
+        let mut cur = dir_root.to_path_buf();
+        for comp in components {
+            let next = cur.join(comp);
+            let meta = fs::symlink_metadata(&next).ok()?;
+            if meta.file_type().is_symlink() {
+                if !self.follow_symlinks {
+                    return None;
+                }
+                // Resolve this step and ensure we remain under the canonical root
+                let root_canon = dir_root.canonicalize().ok()?;
+                let next_canon = next.canonicalize().ok()?;
+                if !Self::is_within(&root_canon, &next_canon) {
+                    return None;
+                }
+                cur = next_canon;
+            } else {
+                cur = next;
+            }
+        }
+        // Final containment check against canonical root when possible
+        if let (Ok(root_canon), Ok(cur_canon)) =
+            (dir_root.canonicalize(), cur.canonicalize())
+        {
+            if !Self::is_within(&root_canon, &cur_canon) {
+                return None;
+            }
+            // Prefer canonical path when available (stable for open)
+            if self.follow_symlinks || !fs::symlink_metadata(&cur).ok()?.file_type().is_symlink() {
+                return Some(cur_canon);
+            }
+        }
+        Some(cur)
     }
 
     fn resolve(&self, req_path: &str) -> Option<Resolved> {
@@ -437,8 +529,16 @@ impl Vfs {
             return Some(Resolved::Index);
         }
 
-        if let Some(real) = self.files.get(req_path) {
-            return Some(Resolved::File(real.clone()));
+        // Null / backslash anywhere in the request path
+        if req_path.contains('\0') || req_path.contains('\\') {
+            return None;
+        }
+
+        // Exact file at virtual root (basename only — no slash)
+        if !req_path.contains('/') {
+            if let Some(real) = self.files.get(req_path) {
+                return Some(Resolved::File(real.clone()));
+            }
         }
 
         let mut parts = req_path.splitn(2, '/');
@@ -449,17 +549,22 @@ impl Vfs {
             if rest.is_empty() {
                 return Some(Resolved::Dir(dir_root.clone(), first.to_string()));
             }
-            let candidate = dir_root.join(rest);
-            let cand_canon = candidate.canonicalize().ok()?;
-            let root_canon = dir_root.canonicalize().ok()?;
-            if !cand_canon.starts_with(&root_canon) {
-                return None;
+            let components = Self::validate_components(rest)?;
+            let resolved = self.safe_join(dir_root, &components)?;
+            let meta = fs::symlink_metadata(&resolved).ok()?;
+            if meta.is_file()
+                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_file()).unwrap_or(false))
+            {
+                // Ensure we open a regular file, not a remaining symlink when disallowed
+                if !self.follow_symlinks && meta.file_type().is_symlink() {
+                    return None;
+                }
+                return Some(Resolved::File(resolved));
             }
-            if cand_canon.is_file() {
-                return Some(Resolved::File(cand_canon));
-            }
-            if cand_canon.is_dir() {
-                return Some(Resolved::Dir(cand_canon, req_path.to_string()));
+            if meta.is_dir()
+                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false))
+            {
+                return Some(Resolved::Dir(resolved, req_path.to_string()));
             }
         }
 
@@ -698,7 +803,7 @@ fn serve_file(
     path: &Path,
     range_header: Option<&str>,
     head_only: bool,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let mut file = File::open(path)?;
     let meta = file.metadata()?;
     let len = meta.len();
@@ -706,7 +811,7 @@ fn serve_file(
 
     if let Some(rh) = range_header {
         if let Some((start, end)) = parse_range(rh, len) {
-            let to_read = (end - start + 1) as usize;
+            let to_read = end - start + 1;
             let headers = [
                 ("Content-Type", mime.to_string()),
                 ("Content-Length", to_read.to_string()),
@@ -715,12 +820,14 @@ fn serve_file(
                 ("Cache-Control", "no-store".into()),
             ];
             if head_only {
-                return write_response(stream, 206, "Partial Content", &headers, b"");
+                write_response(stream, 206, "Partial Content", &headers, b"")?;
+                return Ok(0);
             }
             file.seek(SeekFrom::Start(start))?;
-            let mut buf = vec![0u8; to_read];
+            let mut buf = vec![0u8; to_read as usize];
             file.read_exact(&mut buf)?;
-            return write_response(stream, 206, "Partial Content", &headers, &buf);
+            write_response(stream, 206, "Partial Content", &headers, &buf)?;
+            return Ok(to_read);
         }
     }
 
@@ -736,9 +843,10 @@ fn serve_file(
     }
     write!(stream, "Connection: close\r\n\r\n")?;
     if head_only {
-        return Ok(());
+        return Ok(0);
     }
 
+    let mut sent: u64 = 0;
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = file.read(&mut buf)?;
@@ -746,8 +854,9 @@ fn serve_file(
             break;
         }
         stream.write_all(&buf[..n])?;
+        sent += n as u64;
     }
-    Ok(())
+    Ok(sent)
 }
 
 fn check_basic_auth(headers: &HashMap<String, String>, user: &str, pass: &str) -> bool {
@@ -987,6 +1096,46 @@ struct UploadConfig {
 }
 
 /// Shared lifetime / transfer limits. Any thread may call record_* after success.
+
+/// Session transfer counters (always tracked; printed on shutdown).
+struct TransferStats {
+    downloads: AtomicU64,
+    download_bytes: AtomicU64,
+    uploads: AtomicU64,
+    upload_bytes: AtomicU64,
+}
+
+impl TransferStats {
+    fn new() -> Self {
+        Self {
+            downloads: AtomicU64::new(0),
+            download_bytes: AtomicU64::new(0),
+            uploads: AtomicU64::new(0),
+            upload_bytes: AtomicU64::new(0),
+        }
+    }
+
+    fn record_download(&self, bytes: u64) {
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        self.download_bytes.fetch_add(bytes, Ordering::SeqCst);
+    }
+
+    fn record_upload(&self, bytes: u64) {
+        self.uploads.fetch_add(1, Ordering::SeqCst);
+        self.upload_bytes.fetch_add(bytes, Ordering::SeqCst);
+    }
+
+    fn summary_line(&self) -> String {
+        let d = self.downloads.load(Ordering::SeqCst);
+        let db = self.download_bytes.load(Ordering::SeqCst);
+        let u = self.uploads.load(Ordering::SeqCst);
+        let ub = self.upload_bytes.load(Ordering::SeqCst);
+        format!(
+            "stats: {d} download(s) ({db} bytes), {u} upload(s) ({ub} bytes)"
+        )
+    }
+}
+
 struct LifetimeState {
     one_shot: bool,
     max_downloads: Option<u64>,
@@ -1090,6 +1239,7 @@ fn handle_request(
     cert_pem: Option<&[u8]>,
     upload: Option<&UploadConfig>,
     lifetime: Option<&LifetimeState>,
+    stats: Option<&TransferStats>,
 ) {
     let mut lines = req_head.lines();
     let request_line = match lines.next() {
@@ -1165,11 +1315,17 @@ fn handle_request(
             if method == "POST" {
                 let result = handle_upload(body, &headers, uc, verbose);
                 let (ok, msg) = match result {
-                    Ok(path) => {
+                    Ok((path, nbytes)) => {
                         if let Some(lt) = lifetime {
                             lt.record_upload();
                         }
-                        (true, format!("Saved as {}", path.display()))
+                        if let Some(st) = stats {
+                            st.record_upload(nbytes);
+                        }
+                        if verbose {
+                            eprintln!("  upload {} ({} bytes)", path.display(), nbytes);
+                        }
+                        (true, format!("Saved as {} ({} bytes)", path.display(), nbytes))
                     }
                     Err(e) => (false, e),
                 };
@@ -1252,11 +1408,17 @@ fn handle_request(
         }
         Some(Resolved::File(path)) => {
             match serve_file(stream, &path, range_header, head_only) {
-                Ok(()) => {
+                Ok(nbytes) => {
                     // Count successful GET of a real file (not HEAD, not listings)
                     if !head_only {
                         if let Some(lt) = lifetime {
                             lt.record_download();
+                        }
+                        if let Some(st) = stats {
+                            st.record_download(nbytes);
+                        }
+                        if verbose {
+                            eprintln!("  served {} ({} bytes)", path.display(), nbytes);
                         }
                     }
                 }
@@ -1291,7 +1453,7 @@ fn handle_upload(
     headers: &HashMap<String, String>,
     uc: &UploadConfig,
     verbose: bool,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, u64), String> {
     if let Some(max) = uc.max_size {
         if body.len() as u64 > max {
             return Err(format!(
@@ -1343,9 +1505,9 @@ fn handle_upload(
     })?;
 
     if verbose {
-        eprintln!("  uploaded {} ({} bytes)", dest.display(), data.len());
+        eprintln!("  stored upload as {} ({} bytes)", dest.display(), data.len());
     }
-    Ok(dest)
+    Ok((dest, data.len() as u64))
 }
 
 fn read_http_message(stream: &mut dyn Read, max_body: u64) -> Option<(String, Vec<u8>)> {
@@ -1414,6 +1576,7 @@ fn handle_client_plain(
     cert_pem: Option<Vec<u8>>,
     upload: Option<UploadConfig>,
     lifetime: Option<Arc<LifetimeState>>,
+    stats: Arc<TransferStats>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -1437,6 +1600,7 @@ fn handle_client_plain(
         cert_pem.as_deref(),
         upload.as_ref(),
         lifetime.as_deref(),
+        Some(stats.as_ref()),
     );
 }
 
@@ -1449,6 +1613,7 @@ fn handle_client_tls(
     tls_config: Arc<ServerConfig>,
     upload: Option<UploadConfig>,
     lifetime: Option<Arc<LifetimeState>>,
+    stats: Arc<TransferStats>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -1483,6 +1648,7 @@ fn handle_client_tls(
         cert_pem.as_deref(),
         upload.as_ref(),
         lifetime.as_deref(),
+        Some(stats.as_ref()),
     );
 }
 
@@ -2054,6 +2220,8 @@ fn main() {
         None
     };
 
+    let stats = Arc::new(TransferStats::new());
+
     let auth: Option<(String, String)> = if args.public {
         None
     } else {
@@ -2230,11 +2398,12 @@ fn main() {
                 let tls_config = tls_config.clone();
                 let upload = upload_cfg.clone();
                 let lifetime = lifetime.clone();
+                let stats = Arc::clone(&stats);
                 thread::spawn(move || {
                     if let Some(cfg) = tls_config {
-                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload, lifetime);
+                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload, lifetime, stats);
                     } else {
-                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload, lifetime);
+                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload, lifetime, stats);
                     }
                 });
             }
@@ -2258,4 +2427,5 @@ fn main() {
     } else {
         println!("Shutting down.");
     }
+    println!("  {}", stats.summary_line());
 }

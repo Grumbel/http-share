@@ -23,7 +23,7 @@ Derived from PROPOSAL.md.
 - [x] HTTP range request support (single-range + suffix)
 - [x] Simple HTML directory listing for directories
 - [x] Symlink policy: `--follow-symlinks`
-- [ ] Harden path traversal / symlink escape further
+- [x] Harden path traversal / symlink escape further
 
 ## Phase 2: Network & discovery
 
@@ -72,7 +72,7 @@ Derived from PROPOSAL.md.
 - [x] Automatic LAN address detection (partial)
 - [ ] mDNS / Bonjour advertisement
 - [ ] Optional ZIP/TAR of multiple shared files
-- [ ] Download statistics
+- [x] Download statistics
 - [x] Cache-Control: no-store
 - [x] Read-only by default
 
