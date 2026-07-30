@@ -50,6 +50,9 @@ struct Args {
     max_uploads: Option<u64>,
 }
 
+/// Product version from the top-level `VERSION` file (via build.rs).
+const VERSION: &str = env!("HTTP_SHARE_VERSION");
+
 fn print_usage(program: &str) {
     eprintln!(
         "Usage: {program} [OPTIONS] <PATH>...
@@ -94,6 +97,7 @@ Lifetime:
       --max-downloads N    Stop after N successful file downloads
       --max-uploads N      Stop after N successful uploads
 
+  -V, --version            Print version and exit
   -h, --help               Print help
 
 URL layout (FTP-style):
@@ -143,6 +147,10 @@ fn parse_args() -> Args {
     while i < args.len() {
         let a = &args[i];
         match a.as_str() {
+            "-V" | "--version" => {
+                println!("http-share {VERSION}");
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 print_usage(&program);
                 std::process::exit(0);

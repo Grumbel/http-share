@@ -9,14 +9,21 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = nixpkgs.legacyPackages.${system};
+        lib = pkgs.lib;
+        # Source of truth: top-level VERSION (e.g. "0.1.0-dev").
+        versionBase = lib.strings.removeSuffix "\n" (builtins.readFile ./VERSION);
+        gitRev = "${self.shortRev or self.dirtyShortRev or "dirty"}";
+        version = "${versionBase}+g${gitRev}";
+
         http-share = pkgs.rustPlatform.buildRustPackage {
           pname = "http-share";
-          version = "0.1.0";
+          inherit version;
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          # Zero external crate deps; pure std.
-          meta = with pkgs.lib; {
+          # Embed the flake-expanded version (with +g<rev>) into the binary.
+          HTTP_SHARE_VERSION_OVERRIDE = version;
+          meta = with lib; {
             description = "Minimal HTTP(S) file sharing utility for ad-hoc transfers";
             license = licenses.mit;
             mainProgram = "http-share";
