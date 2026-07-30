@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! HTTP Basic, query-parameter, and session-cookie authentication.
 
 use std::collections::HashMap;
@@ -82,9 +85,13 @@ pub(crate) fn check_cookie_auth(headers: &HashMap<String, String>, user: &str, p
     false
 }
 
-pub(crate) fn auth_set_cookie(user: &str, pass: &str) -> String {
+pub(crate) fn auth_set_cookie(user: &str, pass: &str, secure: bool) -> String {
     let token = B64.encode(format!("{user}:{pass}"));
-    format!("http_share_auth={token}; Path=/; HttpOnly; SameSite=Lax")
+    let mut cookie = format!("http_share_auth={token}; Path=/; HttpOnly; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 /// Query suffix to append to internal links so navigation keeps credentials
@@ -187,7 +194,7 @@ mod tests {
 
     #[test]
     fn cookie_auth_roundtrip() {
-        let cookie = auth_set_cookie("alice", "secret");
+        let cookie = auth_set_cookie("alice", "secret", false);
         // "http_share_auth=...; Path=/; ..."
         let val = cookie.split(';').next().unwrap();
         let mut h = HashMap::new();

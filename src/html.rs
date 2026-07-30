@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! HTML directory listings, landing page, and upload form.
 
 use std::fs;

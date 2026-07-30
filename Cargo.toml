@@ -1,10 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 [package]
 name = "http-share"
 version = "0.1.0-dev"
 edition = "2021"
 description = "Minimal HTTP(S) file sharing utility for ad-hoc file transfers"
-license = "MIT"
-readme = "PROPOSAL.md"
+license = "GPL-3.0-or-later"
+readme = "README.md"
 
 [dependencies]
 # Pinned for rustc 1.75 / edition 2021 (registry serves newer edition2024 crates otherwise)

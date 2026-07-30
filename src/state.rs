@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Lifetime limits and transfer statistics.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

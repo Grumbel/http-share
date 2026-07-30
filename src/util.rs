@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared string/path helpers and small HTTP utilities.
 
 use std::collections::HashMap;

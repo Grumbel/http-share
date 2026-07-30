@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 {
   description = "http-share — minimal HTTP(S) file sharing utility";
 
@@ -25,7 +28,7 @@
           HTTP_SHARE_VERSION_OVERRIDE = version;
           meta = with lib; {
             description = "Minimal HTTP(S) file sharing utility for ad-hoc transfers";
-            license = licenses.mit;
+            license = licenses.gpl3Plus;
             mainProgram = "http-share";
           };
         };
@@ -36,6 +39,9 @@
         apps.default = {
           type = "app";
           program = "${http-share}/bin/http-share";
+          meta = {
+            description = "Minimal HTTP(S) file sharing utility for ad-hoc transfers";
+          };
         };
 
         devShells.default = pkgs.mkShell {
@@ -48,7 +54,16 @@
           ];
         };
 
-        checks.http-share = http-share;
+        checks = {
+          http-share = http-share;
+          # SPDX / REUSE compliance (headers + REUSE.toml annotations)
+          reuse = pkgs.runCommand "reuse-lint" {
+            nativeBuildInputs = [ pkgs.reuse ];
+          } ''
+            reuse --root ${./.} lint
+            touch "$out"
+          '';
+        };
 
         formatter = pkgs.nixpkgs-fmt;
       });

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! http-share — minimal HTTP(S) file sharing utility for ad-hoc transfers.
 //!
 //! Only files and directories given on the command line are exposed.

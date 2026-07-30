@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # AGENTS.md — http-share
 
 Guidance for humans and coding agents working on this repository.

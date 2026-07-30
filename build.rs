@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Embed the top-level VERSION file as HTTP_SHARE_VERSION for --version.
 // VERSION is the sole product-version source of truth (see AGENTS.md).
 fn main() {

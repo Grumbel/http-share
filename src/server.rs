@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Request handling and per-connection workers.
 
 use std::collections::HashMap;
@@ -66,7 +69,7 @@ pub(crate) fn handle_request(
         }
         if query_credentials_match(&query, user, pass) {
             auth_q = auth_query_suffix(user, pass);
-            set_cookie = Some(auth_set_cookie(user, pass));
+            set_cookie = Some(auth_set_cookie(user, pass, cert_pem.is_some()));
         }
     }
 

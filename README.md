@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # http-share
 
 Minimal HTTP(S) file sharing for ad-hoc transfers. Share only the paths you list — nothing else.
@@ -191,3 +196,10 @@ http-share --user alice --password hunter2 ./dataset.tar.gz
 http-share --help
 http-share --version
 ```
+
+## License
+
+Copyright 2026 Ingo Ruhnke &lt;grumbel@gmail.com&gt;.
+
+This project is licensed under the **GNU General Public License v3.0 or later**.
+See [`LICENSES/GPL-3.0-or-later.txt`](LICENSES/GPL-3.0-or-later.txt) and the SPDX headers in each file.
