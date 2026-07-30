@@ -10,7 +10,7 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -42,6 +42,10 @@ struct Args {
     upload_only: bool,
     max_upload_size: Option<u64>,
     allow_overwrite: bool,
+    one_shot: bool,
+    expire: Option<Duration>,
+    max_downloads: Option<u64>,
+    max_uploads: Option<u64>,
 }
 
 fn print_usage(program: &str) {
@@ -70,6 +74,10 @@ Options:
       --upload-only        Only accept uploads (no downloads of shared paths)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
+      --one-shot           Stop after the first successful download or upload
+      --expire DURATION    Stop after DURATION (e.g. 30s, 5m, 1h)
+      --max-downloads N    Stop after N successful file downloads
+      --max-uploads N      Stop after N successful uploads
   -h, --help               Print help
 "
     );
@@ -98,6 +106,10 @@ fn parse_args() -> Args {
     let mut upload_only = false;
     let mut max_upload_size: Option<u64> = None;
     let mut allow_overwrite = false;
+    let mut one_shot = false;
+    let mut expire: Option<Duration> = None;
+    let mut max_downloads: Option<u64> = None;
+    let mut max_uploads: Option<u64> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -138,6 +150,40 @@ fn parse_args() -> Args {
             "--random-password" => random_password = true,
             "--upload-only" => upload_only = true,
             "--allow-overwrite" => allow_overwrite = true,
+            "--one-shot" => one_shot = true,
+            "--expire" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --expire requires a duration (e.g. 30s, 5m, 1h)");
+                    std::process::exit(1);
+                }
+                expire = Some(parse_duration(&args[i]).unwrap_or_else(|e| {
+                    eprintln!("error: invalid --expire: {e}");
+                    std::process::exit(1);
+                }));
+            }
+            "--max-downloads" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --max-downloads requires a number");
+                    std::process::exit(1);
+                }
+                max_downloads = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("error: invalid --max-downloads");
+                    std::process::exit(1);
+                }));
+            }
+            "--max-uploads" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --max-uploads requires a number");
+                    std::process::exit(1);
+                }
+                max_uploads = Some(args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("error: invalid --max-uploads");
+                    std::process::exit(1);
+                }));
+            }
             "--incoming" => {
                 i += 1;
                 if i >= args.len() {
@@ -244,7 +290,35 @@ fn parse_args() -> Args {
         upload_only,
         max_upload_size,
         allow_overwrite,
+        one_shot,
+        expire,
+        max_downloads,
+        max_uploads,
     }
+}
+
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return Err("empty duration".into());
+    }
+    // bare number = seconds
+    if let Ok(n) = s.parse::<u64>() {
+        return Ok(Duration::from_secs(n));
+    }
+    let (num_str, mult) = match s.as_bytes().last() {
+        Some(b's') => (&s[..s.len() - 1], 1u64),
+        Some(b'm') => (&s[..s.len() - 1], 60u64),
+        Some(b'h') => (&s[..s.len() - 1], 3600u64),
+        Some(b'd') => (&s[..s.len() - 1], 86400u64),
+        _ => return Err(format!("use Ns, Nm, Nh, or Nd (got {s})")),
+    };
+    let n: u64 = num_str.trim().parse().map_err(|_| format!("not a number: {num_str}"))?;
+    let secs = n.checked_mul(mult).ok_or_else(|| "duration overflow".to_string())?;
+    if secs == 0 {
+        return Err("duration must be > 0".into());
+    }
+    Ok(Duration::from_secs(secs))
 }
 
 fn parse_size(s: &str) -> Result<u64, String> {
@@ -912,6 +986,99 @@ struct UploadConfig {
     upload_only: bool,
 }
 
+/// Shared lifetime / transfer limits. Any thread may call record_* after success.
+struct LifetimeState {
+    one_shot: bool,
+    max_downloads: Option<u64>,
+    max_uploads: Option<u64>,
+    downloads: AtomicU64,
+    uploads: AtomicU64,
+    started: std::time::Instant,
+    expire: Option<Duration>,
+}
+
+impl LifetimeState {
+    fn new(
+        one_shot: bool,
+        expire: Option<Duration>,
+        max_downloads: Option<u64>,
+        max_uploads: Option<u64>,
+    ) -> Self {
+        Self {
+            one_shot,
+            max_downloads,
+            max_uploads,
+            downloads: AtomicU64::new(0),
+            uploads: AtomicU64::new(0),
+            started: std::time::Instant::now(),
+            expire,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        if let Some(d) = self.expire {
+            self.started.elapsed() >= d
+        } else {
+            false
+        }
+    }
+
+    fn should_stop(&self) -> bool {
+        if self.expired() {
+            return true;
+        }
+        if let Some(n) = self.max_downloads {
+            if self.downloads.load(Ordering::SeqCst) >= n {
+                return true;
+            }
+        }
+        if let Some(n) = self.max_uploads {
+            if self.uploads.load(Ordering::SeqCst) >= n {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn record_download(&self) {
+        let n = self.downloads.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.one_shot || self.max_downloads.map(|m| n >= m).unwrap_or(false) {
+            CTRL_C_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn record_upload(&self) {
+        let n = self.uploads.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.one_shot || self.max_uploads.map(|m| n >= m).unwrap_or(false) {
+            CTRL_C_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn stop_reason(&self) -> Option<&'static str> {
+        if self.one_shot
+            && (self.downloads.load(Ordering::SeqCst) > 0
+                || self.uploads.load(Ordering::SeqCst) > 0)
+        {
+            return Some("one-shot transfer completed");
+        }
+        if self.expired() {
+            return Some("expire duration reached");
+        }
+        if let Some(n) = self.max_downloads {
+            if self.downloads.load(Ordering::SeqCst) >= n {
+                return Some("max-downloads reached");
+            }
+        }
+        if let Some(n) = self.max_uploads {
+            if self.uploads.load(Ordering::SeqCst) >= n {
+                return Some("max-uploads reached");
+            }
+        }
+        None
+    }
+}
+
+
 
 fn handle_request(
     stream: &mut dyn Write,
@@ -922,6 +1089,7 @@ fn handle_request(
     auth: Option<(&str, &str)>,
     cert_pem: Option<&[u8]>,
     upload: Option<&UploadConfig>,
+    lifetime: Option<&LifetimeState>,
 ) {
     let mut lines = req_head.lines();
     let request_line = match lines.next() {
@@ -997,7 +1165,12 @@ fn handle_request(
             if method == "POST" {
                 let result = handle_upload(body, &headers, uc, verbose);
                 let (ok, msg) = match result {
-                    Ok(path) => (true, format!("Saved as {}", path.display())),
+                    Ok(path) => {
+                        if let Some(lt) = lifetime {
+                            lt.record_upload();
+                        }
+                        (true, format!("Saved as {}", path.display()))
+                    }
                     Err(e) => (false, e),
                 };
                 let html = upload_result_html(ok, &msg);
@@ -1078,9 +1251,19 @@ fn handle_request(
             }
         }
         Some(Resolved::File(path)) => {
-            if let Err(e) = serve_file(stream, &path, range_header, head_only) {
-                if verbose {
-                    eprintln!("  error serving {}: {e}", path.display());
+            match serve_file(stream, &path, range_header, head_only) {
+                Ok(()) => {
+                    // Count successful GET of a real file (not HEAD, not listings)
+                    if !head_only {
+                        if let Some(lt) = lifetime {
+                            lt.record_download();
+                        }
+                    }
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!("  error serving {}: {e}", path.display());
+                    }
                 }
             }
         }
@@ -1230,6 +1413,7 @@ fn handle_client_plain(
     auth: Option<(String, String)>,
     cert_pem: Option<Vec<u8>>,
     upload: Option<UploadConfig>,
+    lifetime: Option<Arc<LifetimeState>>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -1252,6 +1436,7 @@ fn handle_client_plain(
         auth_ref,
         cert_pem.as_deref(),
         upload.as_ref(),
+        lifetime.as_deref(),
     );
 }
 
@@ -1263,6 +1448,7 @@ fn handle_client_tls(
     cert_pem: Option<Vec<u8>>,
     tls_config: Arc<ServerConfig>,
     upload: Option<UploadConfig>,
+    lifetime: Option<Arc<LifetimeState>>,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -1296,6 +1482,7 @@ fn handle_client_tls(
         auth_ref,
         cert_pem.as_deref(),
         upload.as_ref(),
+        lifetime.as_deref(),
     );
 }
 
@@ -1852,6 +2039,21 @@ fn main() {
         upload_only: args.upload_only,
     });
 
+    let lifetime = if args.one_shot
+        || args.expire.is_some()
+        || args.max_downloads.is_some()
+        || args.max_uploads.is_some()
+    {
+        Some(Arc::new(LifetimeState::new(
+            args.one_shot,
+            args.expire,
+            args.max_downloads,
+            args.max_uploads,
+        )))
+    } else {
+        None
+    };
+
     let auth: Option<(String, String)> = if args.public {
         None
     } else {
@@ -1975,6 +2177,20 @@ fn main() {
         }
         println!("  upload form: {scheme}://…/upload");
     }
+    if let Some(ref lt) = lifetime {
+        if lt.one_shot {
+            println!("  lifetime: one-shot (stop after first successful transfer)");
+        }
+        if let Some(d) = lt.expire {
+            println!("  lifetime: expire after {d:?}");
+        }
+        if let Some(n) = lt.max_downloads {
+            println!("  lifetime: max-downloads {n}");
+        }
+        if let Some(n) = lt.max_uploads {
+            println!("  lifetime: max-uploads {n}");
+        }
+    }
     if args.open {
         if let Some(ref url) = primary_url {
             open_browser(url);
@@ -1998,6 +2214,12 @@ fn main() {
     }
 
     while CTRL_C_RUNNING.load(Ordering::SeqCst) {
+        if let Some(ref lt) = lifetime {
+            if lt.should_stop() {
+                CTRL_C_RUNNING.store(false, Ordering::SeqCst);
+                break;
+            }
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 let _ = stream.set_nonblocking(false);
@@ -2007,11 +2229,12 @@ fn main() {
                 let cert_pem = cert_pem.clone();
                 let tls_config = tls_config.clone();
                 let upload = upload_cfg.clone();
+                let lifetime = lifetime.clone();
                 thread::spawn(move || {
                     if let Some(cfg) = tls_config {
-                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload);
+                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload, lifetime);
                     } else {
-                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload);
+                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload, lifetime);
                     }
                 });
             }
@@ -2026,5 +2249,13 @@ fn main() {
             }
         }
     }
-    println!("Shutting down.");
+    if let Some(ref lt) = lifetime {
+        if let Some(reason) = lt.stop_reason() {
+            println!("Shutting down ({reason}).");
+        } else {
+            println!("Shutting down.");
+        }
+    } else {
+        println!("Shutting down.");
+    }
 }

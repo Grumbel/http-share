@@ -15,15 +15,15 @@ Task tracking: `TODO.md`.
 - **No clap / heavy frameworks.** Manual CLI parsing in `src/main.rs`.
 - **Small dependency footprint.** Current deps only:
   - `rustls` 0.20.9, `rustls-pemfile` 1.0.2, `rcgen` 0.9.3, `base64` 0.21.5, `time` 0.3.20
-  - Prefer pure-std solutions (QR encoder, multipart parser, signal handling are all in-tree).
+  - Prefer pure-std solutions (QR encoder, multipart parser, signal handling, lifetime limits are all in-tree).
 - **Linux primary**; portable where practical.
-- **Trusted user-to-user only.** Lifetime limits (`--expire`, `--max-downloads`, etc.) are **out of scope** (Phase 6 scratched).
+- **Trusted user-to-user only.** Optional lifetime limits (`--one-shot`, `--expire`, `--max-downloads`, `--max-uploads`) stop the process after temporary use — not multi-user hosting.
 - **Safe by default:** only explicit paths; auth on by default (random credentials); no overwrite on upload unless `--allow-overwrite`.
 
 ## Layout
 
 ```
-src/main.rs     # entire application (~2k lines, single file by design)
+src/main.rs     # entire application (single file by design)
 Cargo.toml      # pinned deps for rustc 1.75
 Cargo.lock
 flake.nix       # Nix package / app / devShell / checks
@@ -46,6 +46,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 | Upload | `--incoming DIR`; GET/POST `/upload`; multipart parse in-tree |
 | QR | Pure-Rust byte-mode ECC-L versions 1–6; `--qr` |
 | Shutdown | Non-blocking accept + SIGINT/SIGTERM → `CTRL_C_RUNNING` |
+| Lifetime | `LifetimeState` atomics; download/upload success or expire stops server |
 
 ### Important behaviors
 
@@ -54,6 +55,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 - **Uploads:** basename-only filenames; reject `../`; unique `name-N.ext` unless `--allow-overwrite`.
 - **Upload-only:** shared path downloads return 404; index links to `/upload`.
 - **Body size:** `--max-upload-size` (e.g. `10M`); if unset, practical read cap is 256 MiB.
+- **Lifetime:** `--one-shot` / `--expire` / `--max-downloads` / `--max-uploads` clear `CTRL_C_RUNNING` after limits; directory listings and HEAD do not count as downloads.
 
 ## Build & run
 
@@ -62,6 +64,7 @@ cargo build
 cargo build --release
 ./target/release/http-share --public file.txt
 ./target/release/http-share --https --incoming /tmp/in photos/
+./target/release/http-share --one-shot --expire 10m file.txt
 ```
 
 Nix: `nix build` / `nix run` (flake present; may be unavailable in some agent environments).
@@ -70,8 +73,7 @@ Nix: `nix build` / `nix run` (flake present; may be unavailable in some agent en
 
 ## What is done (as of 2026-07-30)
 
-- Phases 0–5 largely complete (see `TODO.md`).
-- Phase 6 (lifetime management) intentionally skipped.
+- Phases 0–6 complete (see `TODO.md`).
 - Open items of interest:
   - Further path-traversal / symlink hardening
   - mDNS / Bonjour
@@ -111,15 +113,17 @@ http-share --public --incoming /tmp/in --port 8000 ./some-file
 curl -F 'file=@./local.txt' http://127.0.0.1:8000/upload
 curl -O http://127.0.0.1:8000/some-file
 
-# auth URL embeds credentials
-http-share ./file   # prints http://user:pass@host:port/
+# lifetime
+http-share --public --one-shot ./file   # exits after first GET of a file
+http-share --public --expire 30s ./file
+http-share --public --max-downloads 3 ./file
 ```
 
 When changing HTTP parsing or upload, exercise multipart, overwrite policy, and path-traversal filenames (`../../etc/passwd` must fail).
 
 ## Do not
 
-- Add long-lived multi-user features or session databases.
+- Turn this into long-lived multi-user hosting or a session database.
 - Implicitly serve the current working directory.
 - Bump rustls/rcgen to edition-2024 crates without raising the MSRV story.
 - Expand scope into “nice-to-haves” unless the user asks.

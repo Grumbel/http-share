@@ -4,7 +4,7 @@ Minimal HTTP(S) file sharing utility for ad-hoc file transfers (Rust).
 
 Derived from PROPOSAL.md.
 
-**Scope note:** Trusted user-to-user / ad-hoc transfers only. No long-lived multi-user hosting — lifetime limits (`--expire`, `--max-downloads`, etc.) are intentionally out of scope.
+**Scope note:** Trusted user-to-user / ad-hoc transfers only. Lifetime limits (`--one-shot`, `--expire`, `--max-downloads`, `--max-uploads`) stop the process after temporary sharing — not a multi-user hosting platform.
 
 ## Phase 0: Project scaffolding
 
@@ -61,7 +61,11 @@ Derived from PROPOSAL.md.
 
 ## Phase 6: Lifetime management
 
-- **Scratched.** Not for long-lived multi-user use. Trusted peer transfers only.
+- [x] `--one-shot` — stop after first successful download or upload
+- [x] `--expire DURATION` — stop after duration (Ns/Nm/Nh/Nd)
+- [x] `--max-downloads N`
+- [x] `--max-uploads N`
+
 
 ## Phase 7: Nice-to-haves (later)
 
@@ -83,8 +87,7 @@ Derived from PROPOSAL.md.
 
 ## Current status (2026-07-30)
 
-- Phase 2 leftovers done: `--qr`, IPv6, graceful Ctrl+C.
-- Phase 3 (HTTPS) and Phase 4 (Auth) done.
-- Phase 5 upload mode done: `--incoming`, form at `/upload`, multipart POST,
-  unique names by default, `--upload-only`, `--max-upload-size`, `--allow-overwrite`.
+- Phases 0–6 complete (scaffolding through lifetime management).
+- Phase 5 upload mode: `--incoming`, `/upload`, multipart, unique names, size limits.
+- Phase 6 lifetime: `--one-shot`, `--expire`, `--max-downloads`, `--max-uploads`.
 - Default: random Basic Auth credentials embedded in printed URLs.
