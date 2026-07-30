@@ -30,10 +30,10 @@ Derived from PROPOSAL.md.
 - [x] `--bind ADDRESS`, `--port PORT`
 - [x] Print reachable URLs on startup
 - [x] `--open` — open primary URL in the default browser
-- [ ] `--qr` — print terminal QR code of primary URL
+- [x] `--qr` — print terminal QR code of primary URL
 - [x] `--verbose`
-- [ ] IPv6 support (bind / print)
-- [ ] Graceful shutdown on Ctrl+C
+- [x] IPv6 support (bind / print)
+- [x] Graceful shutdown on Ctrl+C
 
 ## Phase 3: HTTPS
 
@@ -83,6 +83,8 @@ Derived from PROPOSAL.md.
 
 ## Current status (2026-07-30)
 
+- Phase 2 leftovers done: `--qr` (pure-Rust terminal QR), IPv6 bind/print (brackets in URLs), graceful Ctrl+C/SIGTERM.
 - Phase 3 (HTTPS) and Phase 4 (Auth) implemented and smoke-tested.
 - Default: random Basic Auth credentials embedded in printed URLs.
 - `--public` disables auth; `--https` enables TLS with persistent or dynamic certs.
+- Next: Phase 5 upload mode.
