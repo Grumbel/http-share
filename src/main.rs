@@ -42,6 +42,8 @@ struct Args {
     upload_only: bool,
     max_upload_size: Option<u64>,
     allow_overwrite: bool,
+    /// When true (default), mount --incoming as virtual /incoming/ for browsing.
+    browse_uploads: bool,
     one_shot: bool,
     expire: Option<Duration>,
     max_downloads: Option<u64>,
@@ -70,15 +72,26 @@ Options:
       --regenerate-cert    Replace the persistent self-signed certificate
       --open               Open primary share URL in the default browser
       --qr                 Print a terminal QR code of the primary URL
-      --incoming DIR       Accept uploads into DIR
+      --incoming DIR       Accept uploads into DIR (also browsable at /incoming/)
       --upload-only        Only accept uploads (no downloads of shared paths)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
+      --no-browse-uploads  Do not expose uploaded files under /incoming/
       --one-shot           Stop after the first successful download or upload
       --expire DURATION    Stop after DURATION (e.g. 30s, 5m, 1h)
       --max-downloads N    Stop after N successful file downloads
       --max-uploads N      Stop after N successful uploads
   -h, --help               Print help
+
+URL layout:
+  /                  Shared files (CLI paths) + links
+  /<name>            Shared file or directory
+  /incoming/         Uploaded files (when --incoming and not --no-browse-uploads)
+  /upload            Upload form (when --incoming)
+  /certificate.pem   HTTPS server certificate (when --https)
+
+Auth: HTTP Basic Auth, or query parameters ?user=…&password=… (for QR scanners
+that do not support userinfo in URLs).
 "
     );
 }
@@ -106,6 +119,7 @@ fn parse_args() -> Args {
     let mut upload_only = false;
     let mut max_upload_size: Option<u64> = None;
     let mut allow_overwrite = false;
+    let mut browse_uploads = true;
     let mut one_shot = false;
     let mut expire: Option<Duration> = None;
     let mut max_downloads: Option<u64> = None;
@@ -150,6 +164,7 @@ fn parse_args() -> Args {
             "--random-password" => random_password = true,
             "--upload-only" => upload_only = true,
             "--allow-overwrite" => allow_overwrite = true,
+            "--no-browse-uploads" => browse_uploads = false,
             "--one-shot" => one_shot = true,
             "--expire" => {
                 i += 1;
@@ -290,6 +305,7 @@ fn parse_args() -> Args {
         upload_only,
         max_upload_size,
         allow_overwrite,
+        browse_uploads,
         one_shot,
         expire,
         max_downloads,
@@ -449,6 +465,18 @@ impl Vfs {
             dirs,
             follow_symlinks,
         })
+    }
+
+    /// Mount an extra directory under a virtual name (e.g. "incoming").
+    fn add_dir(&mut self, name: &str, path: PathBuf) -> io::Result<()> {
+        if self.files.contains_key(name) || self.dirs.contains_key(name) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("name collision for directory '{name}'"),
+            ));
+        }
+        self.dirs.insert(name.to_string(), path);
+        Ok(())
     }
 
     /// Reject path components that can escape or confuse resolution.
@@ -657,13 +685,40 @@ fn encode_path_component(s: &str) -> String {
     out
 }
 
-fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>, show_upload: bool) -> String {
-    let mut items: Vec<(String, String, bool)> = Vec::new();
+fn format_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+/// Listing entry: (href, display name, is_dir, optional size string)
+fn listing_html(
+    vfs: &Vfs,
+    virt_path: &str,
+    real_dir: Option<&Path>,
+    show_upload: bool,
+    show_cert: bool,
+) -> String {
+    // (href, display, is_dir, size_label)
+    let mut items: Vec<(String, String, bool, String)> = Vec::new();
 
     if let Some(dir) = real_dir {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
+                // Hide internal temp upload files
+                if name.starts_with(".upload-") && name.ends_with(".tmp") {
+                    continue;
+                }
                 let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 let href = if virt_path.is_empty() || virt_path == "/" {
                     format!("/{}", encode_path_component(&name))
@@ -677,17 +732,29 @@ fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>, show_upload
                 let display = if is_dir {
                     format!("{name}/")
                 } else {
-                    name
+                    name.clone()
                 };
-                items.push((href, display, is_dir));
+                let size_label = if is_dir {
+                    String::new()
+                } else {
+                    entry
+                        .metadata()
+                        .map(|m| format_bytes(m.len()))
+                        .unwrap_or_default()
+                };
+                items.push((href, display, is_dir, size_label));
             }
         }
     } else {
-        for name in vfs.files.keys() {
+        for (name, path) in &vfs.files {
+            let size_label = fs::metadata(path)
+                .map(|m| format_bytes(m.len()))
+                .unwrap_or_default();
             items.push((
                 format!("/{}", encode_path_component(name)),
                 name.clone(),
                 false,
+                size_label,
             ));
         }
         for name in vfs.dirs.keys() {
@@ -695,56 +762,106 @@ fn listing_html(vfs: &Vfs, virt_path: &str, real_dir: Option<&Path>, show_upload
                 format!("/{}/", encode_path_component(name)),
                 format!("{name}/"),
                 true,
+                String::new(),
             ));
         }
     }
 
-    items.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    items.sort_by(|a, b| {
+        match (a.2, b.2) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
+        }
+    });
 
-    let mut body = String::from(
+    let title = if virt_path == "/" || virt_path.is_empty() {
+        "Shared files"
+    } else {
+        virt_path.trim_matches('/')
+    };
+
+    let title_esc = html_escape(title);
+    let mut body = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>http-share</title>
+<title>{0} — http-share</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 42rem; color: #222; }
-  h1 { font-size: 1.2rem; margin-bottom: 1rem; }
-  ul { list-style: none; padding: 0; margin: 0; }
-  li { padding: 0.3rem 0; border-bottom: 1px solid #eee; }
-  a { text-decoration: none; color: #06c; }
-  a:hover { text-decoration: underline; }
-  .dir { font-weight: 600; }
-  footer { margin-top: 2rem; font-size: 0.85rem; color: #888; }
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 48rem; color: #222; }}
+  h1 {{ font-size: 1.2rem; margin-bottom: 1rem; }}
+  ul {{ list-style: none; padding: 0; margin: 0; }}
+  li {{ padding: 0.35rem 0; border-bottom: 1px solid #eee; display: flex; gap: 0.75rem; align-items: baseline; }}
+  li a {{ text-decoration: none; color: #06c; flex: 1; min-width: 0; word-break: break-all; }}
+  li a:hover {{ text-decoration: underline; }}
+  .dir {{ font-weight: 600; }}
+  .size {{ color: #666; font-size: 0.9rem; font-variant-numeric: tabular-nums; white-space: nowrap; }}
+  .nav {{ margin: 1.25rem 0; font-size: 0.95rem; }}
+  .nav a {{ color: #06c; margin-right: 1rem; }}
+  footer {{ margin-top: 2rem; font-size: 0.85rem; color: #888; }}
+  footer a {{ color: #06c; }}
 </style>
 </head>
 <body>
-<h1>Shared files</h1>
+<h1>{0}</h1>
 <ul>
 "#,
+        title_esc
     );
 
     if virt_path != "/" && !virt_path.is_empty() {
-        body.push_str(r#"<li><a href=".." class="dir">../</a></li>"#);
-    }
-
-    for (href, display, is_dir) in &items {
-        let class = if *is_dir { r#" class="dir""# } else { "" };
+        let parent = {
+            let t = virt_path.trim_matches('/');
+            if let Some(i) = t.rfind('/') {
+                format!("/{}/", &t[..i])
+            } else {
+                "/".to_string()
+            }
+        };
         body.push_str(&format!(
-            r#"<li><a href="{}"{}>{}</a></li>"#,
-            html_escape(href),
-            class,
-            html_escape(display)
+            r#"<li><a href="{}" class="dir">../</a><span class="size"></span></li>"#,
+            html_escape(&parent)
         ));
     }
 
-    body.push_str(r#"</ul>"#);
-    if show_upload {
-        body.push_str(
-            r#"<p style="margin-top:1.5rem"><a href="/upload">Upload a file…</a></p>"#,
-        );
+    for (href, display, is_dir, size_label) in &items {
+        let class = if *is_dir { r#" class="dir""# } else { "" };
+        body.push_str(&format!(
+            r#"<li><a href="{}"{}>{}</a><span class="size">{}</span></li>"#,
+            html_escape(href),
+            class,
+            html_escape(display),
+            html_escape(size_label)
+        ));
     }
+
+    if items.is_empty() {
+        body.push_str(r#"<li style="color:#888">No files</li>"#);
+    }
+
+    body.push_str(r#"</ul>"#);
+
+    let mut nav = Vec::new();
+    if show_upload {
+        nav.push(r#"<a href="/upload">Upload a file…</a>"#);
+    }
+    if virt_path != "/" && !virt_path.is_empty() {
+        nav.push(r#"<a href="/">Shared files</a>"#);
+    }
+    if (virt_path == "/" || virt_path.is_empty()) && vfs.dirs.contains_key("incoming") {
+        nav.push(r#"<a href="/incoming/">Uploaded files</a>"#);
+    }
+    if show_cert {
+        nav.push(r#"<a href="/certificate.pem">Download certificate.pem</a>"#);
+    }
+    if !nav.is_empty() {
+        body.push_str(r#"<p class="nav">"#);
+        body.push_str(&nav.join(" · "));
+        body.push_str("</p>");
+    }
+
     body.push_str(
         r#"
 <footer>http-share</footer>
@@ -876,6 +993,75 @@ fn check_basic_auth(headers: &HashMap<String, String>, user: &str, pass: &str) -
         return false;
     };
     u == user && p == pass
+}
+
+/// Parse `a=b&c=d` query string into a map (first value wins; values percent-decoded).
+fn parse_query(q: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in q.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        let key = percent_decode(k);
+        if !map.contains_key(&key) {
+            map.insert(key, percent_decode(v));
+        }
+    }
+    map
+}
+
+/// Accept Basic Auth header **or** query credentials (`user`/`password` or short `u`/`p`).
+/// Query form is for QR scanners / clients that cannot handle `user:pass@host` userinfo.
+fn check_auth(
+    headers: &HashMap<String, String>,
+    query: &HashMap<String, String>,
+    user: &str,
+    pass: &str,
+) -> bool {
+    if check_basic_auth(headers, user, pass) {
+        return true;
+    }
+    let q_user = query
+        .get("user")
+        .or_else(|| query.get("u"))
+        .map(|s| s.as_str());
+    let q_pass = query
+        .get("password")
+        .or_else(|| query.get("pass"))
+        .or_else(|| query.get("p"))
+        .map(|s| s.as_str());
+    match (q_user, q_pass) {
+        (Some(u), Some(p)) => u == user && p == pass,
+        _ => false,
+    }
+}
+
+/// Build a share URL. `for_qr` uses query-string credentials (Android-friendly)
+/// instead of URL userinfo, which many QR scanners drop or mishandle.
+fn build_share_url(
+    scheme: &str,
+    host: &str,
+    port: u16,
+    auth: Option<(&str, &str)>,
+    for_qr: bool,
+) -> String {
+    match auth {
+        Some((u, p)) if for_qr => format!(
+            "{scheme}://{host}:{port}/?user={}&password={}",
+            url_encode_component(u),
+            url_encode_component(p)
+        ),
+        Some((u, p)) => format!(
+            "{scheme}://{}:{}@{host}:{port}/",
+            url_encode_component(u),
+            url_encode_component(p)
+        ),
+        None => format!("{scheme}://{host}:{port}/"),
+    }
 }
 
 fn unauthorized(stream: &mut dyn Write) -> io::Result<()> {
@@ -1261,19 +1447,23 @@ fn handle_request(
         }
     }
 
+    let path_only = raw_path.split('?').next().unwrap_or("/");
+    let query_str = raw_path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let query = parse_query(query_str);
+    let decoded = percent_decode(path_only);
+
     if let Some((user, pass)) = auth {
-        if !check_basic_auth(&headers, user, pass) {
+        if !check_auth(&headers, &query, user, pass) {
             let _ = unauthorized(stream);
             return;
         }
     }
 
-    let path_only = raw_path.split('?').next().unwrap_or("/");
-    let decoded = percent_decode(path_only);
-
     if verbose {
         eprintln!("→ {method} {decoded} (body {} bytes)", body.len());
     }
+
+    let show_cert = cert_pem.is_some();
 
     // Certificate endpoint
     if method == "GET" || method == "HEAD" {
@@ -1360,22 +1550,29 @@ fn handle_request(
         return;
     }
 
-    // Upload-only: block downloads of shared content
+    // Upload-only: block downloads of shared CLI paths; still allow /incoming if mounted
     if upload.map(|u| u.upload_only).unwrap_or(false) {
-        // Still allow the index to point at upload
+        let is_incoming = decoded == "/incoming"
+            || decoded == "incoming"
+            || decoded.starts_with("/incoming/")
+            || decoded.starts_with("incoming/");
         if decoded == "/" || decoded.is_empty() || decoded == "." {
-            let html = if upload.is_some() {
-                format!(
-                    r#"<!DOCTYPE html>
+            let mut links = String::from(r#"<p><a href="/upload">Upload a file…</a>"#);
+            if vfs.dirs.contains_key("incoming") {
+                links.push_str(r#" · <a href="/incoming/">Uploaded files</a>"#);
+            }
+            if show_cert {
+                links.push_str(r#" · <a href="/certificate.pem">Download certificate.pem</a>"#);
+            }
+            links.push_str("</p>");
+            let html = format!(
+                r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>http-share</title>
-<style>body{{font-family:system-ui,sans-serif;margin:2rem}}</style></head>
+<style>body{{font-family:system-ui,sans-serif;margin:2rem}} a{{color:#06c}}</style></head>
 <body><h1>Upload only</h1>
-<p><a href="/upload">Upload a file…</a></p>
+{links}
 <footer>http-share</footer></body></html>"#
-                )
-            } else {
-                "Not Found".into()
-            };
+            );
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -1384,8 +1581,11 @@ fn handle_request(
             let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
             return;
         }
-        let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
-        return;
+        if !is_incoming {
+            let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
+            return;
+        }
+        // fall through to resolve /incoming/…
     }
 
     let head_only = method == "HEAD";
@@ -1394,7 +1594,7 @@ fn handle_request(
 
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
-            let html = listing_html(vfs, "/", None, show_upload);
+            let html = listing_html(vfs, "/", None, show_upload, show_cert);
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -1430,7 +1630,7 @@ fn handle_request(
             }
         }
         Some(Resolved::Dir(real, virt)) => {
-            let html = listing_html(vfs, &virt, Some(&real), show_upload);
+            let html = listing_html(vfs, &virt, Some(&real), show_upload, show_cert);
             let headers = [
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Content-Length", html.len().to_string()),
@@ -2173,13 +2373,35 @@ fn install_ctrlc_handler() {
 fn main() {
     let args = parse_args();
 
-    let vfs = match Vfs::from_paths(&args.paths, args.follow_symlinks) {
-        Ok(v) => Arc::new(v),
+    let mut vfs = match Vfs::from_paths(&args.paths, args.follow_symlinks) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
+
+    // Mount --incoming as virtual /incoming/ so uploads are browsable (unless disabled).
+    if let Some(ref dir) = args.incoming {
+        if args.browse_uploads {
+            let path = if args.follow_symlinks {
+                dir.canonicalize().unwrap_or_else(|_| dir.clone())
+            } else if dir.is_absolute() {
+                dir.clone()
+            } else {
+                env::current_dir()
+                    .map(|c| c.join(dir))
+                    .unwrap_or_else(|_| dir.clone())
+            };
+            if let Err(e) = vfs.add_dir("incoming", path) {
+                eprintln!("error: cannot mount /incoming/: {e}");
+                eprintln!("  tip: avoid sharing a path whose basename is 'incoming', or pass --no-browse-uploads");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let vfs = Arc::new(vfs);
 
     if args.verbose {
         eprintln!(
@@ -2194,7 +2416,11 @@ fn main() {
             eprintln!("  dir   /{n}/ → {}", p.display());
         }
         if let Some(ref d) = args.incoming {
-            eprintln!("  incoming uploads → {}", d.display());
+            eprintln!(
+                "  incoming uploads → {} (browse={})",
+                d.display(),
+                args.browse_uploads
+            );
         }
     }
 
@@ -2292,16 +2518,8 @@ fn main() {
             continue;
         }
         let host = host_for_url(&ip);
-        let url = if let Some((ref u, ref p)) = auth {
-            format!(
-                "{scheme}://{}:{}@{host}:{}/",
-                url_encode_component(u),
-                url_encode_component(p),
-                args.port
-            )
-        } else {
-            format!("{scheme}://{host}:{}/", args.port)
-        };
+        let auth_ref = auth.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
+        let url = build_share_url(scheme, &host, args.port, auth_ref, false);
         if primary_url.is_none() && !is_loopback(&ip) {
             primary_url = Some(url.clone());
         }
@@ -2314,32 +2532,32 @@ fn main() {
             "127.0.0.1"
         };
         let host = host_for_url(fallback_ip);
-        primary_url = Some(if let Some((ref u, ref p)) = auth {
-            format!(
-                "{scheme}://{}:{}@{host}:{}/",
-                url_encode_component(u),
-                url_encode_component(p),
-                args.port
-            )
-        } else {
-            format!("{scheme}://{host}:{}/", args.port)
-        });
+        let auth_ref = auth.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
+        primary_url = Some(build_share_url(scheme, &host, args.port, auth_ref, false));
         if !bind_all_v4 && !bind_all_v6 {
             println!("  {}", primary_url.as_ref().unwrap());
         }
     }
     if auth.is_some() {
-        println!("  authentication: HTTP Basic Auth (credentials embedded in URLs above)");
+        println!("  authentication: HTTP Basic Auth (credentials in URLs above)");
+        println!("  QR / mobile tip: use query form ?user=…&password=… (see --qr)");
     } else {
         println!("  authentication: disabled (--public)");
     }
     if args.https {
-        println!("  certificate available at {scheme}://…/certificate.pem");
+        println!("  certificate: {scheme}://…/certificate.pem (also linked from directory pages)");
     }
     if let Some(ref uc) = upload_cfg {
-        println!("  uploads: {} → {}", 
+        println!(
+            "  uploads: {} → {}",
             if uc.upload_only { "only" } else { "enabled" },
-            uc.dir.display());
+            uc.dir.display()
+        );
+        if args.browse_uploads {
+            println!("  uploaded files: {scheme}://…/incoming/");
+        } else {
+            println!("  uploaded files: not browsable (--no-browse-uploads)");
+        }
         if let Some(max) = uc.max_size {
             println!("  max upload size: {max} bytes");
         }
@@ -2365,9 +2583,31 @@ fn main() {
         }
     }
     if args.qr {
-        if let Some(ref url) = primary_url {
-            println!("QR code for primary URL:");
-            qr_print(url);
+        // Prefer query-parameter credentials for QR: many Android scanners do not
+        // preserve userinfo (user:pass@host) when opening the URL.
+        let qr_url = if let Some(ref url) = primary_url {
+            if let Some((ref u, ref p)) = auth {
+                if let Some(rest) = url.split("://").nth(1) {
+                    let after_at = rest.split('@').last().unwrap_or(rest);
+                    let hostport = after_at.trim_end_matches('/');
+                    format!(
+                        "{scheme}://{hostport}/?user={}&password={}",
+                        url_encode_component(u),
+                        url_encode_component(p)
+                    )
+                } else {
+                    url.clone()
+                }
+            } else {
+                url.clone()
+            }
+        } else {
+            String::new()
+        };
+        if !qr_url.is_empty() {
+            println!("QR code (query-auth URL, Android-friendly):");
+            println!("  {qr_url}");
+            qr_print(&qr_url);
         }
     }
     println!("Press Ctrl+C to stop.");

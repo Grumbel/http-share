@@ -42,9 +42,9 @@ Keep the single-file style unless a change clearly benefits from a module split.
 | VFS | `Vfs`, `Resolved` — virtual root `/`; files by basename; dirs keep hierarchy |
 | HTTP | Manual request parse; `handle_request`; range GETs; HTML listings |
 | TLS | Persistent self-signed cert under `~/.config/http-share/`; `--dynamic-cert` / `--regenerate-cert` |
-| Auth | HTTP Basic; default random user `share` + password; `--public` disables |
-| Upload | `--incoming DIR`; GET/POST `/upload`; multipart parse in-tree |
-| QR | Pure-Rust byte-mode ECC-L versions 1–6; `--qr` |
+| Auth | HTTP Basic **or** query `?user=&password=` / `?u=&p=`; default random user `share`; `--public` disables |
+| Upload | `--incoming DIR`; GET/POST `/upload`; browsable at `/incoming/` unless `--no-browse-uploads` |
+| QR | Pure-Rust byte-mode ECC-L versions 1–6; `--qr` uses query-auth URL (Android-friendly) |
 | Shutdown | Non-blocking accept + SIGINT/SIGTERM → `CTRL_C_RUNNING` |
 | Lifetime | `LifetimeState` atomics; download/upload success or expire stops server |
 | Stats | `TransferStats` — counts + bytes; summary on shutdown |
@@ -52,9 +52,11 @@ Keep the single-file style unless a change clearly benefits from a module split.
 ### Important behaviors
 
 - **Paths:** at least one path **or** `--incoming DIR` required.
-- **URLs:** credentials embedded when auth is on; IPv6 hosts printed as `[addr]`.
+- **URL layout:** CLI shares at `/<name>`; uploads at `/incoming/` (if browsing enabled); form at `/upload`; cert at `/certificate.pem`.
+- **URLs:** userinfo credentials in printed URLs; `--qr` uses `?user=&password=` (many Android QR readers drop userinfo).
+- **Listings:** show file sizes; link to cert download when HTTPS; link to `/incoming/` when mounted.
 - **Uploads:** basename-only filenames; reject `../`; unique `name-N.ext` unless `--allow-overwrite`.
-- **Upload-only:** shared path downloads return 404; index links to `/upload`.
+- **Upload-only:** shared path downloads return 404; `/incoming/` still allowed if browsing is on; index links to `/upload`.
 - **Body size:** `--max-upload-size` (e.g. `10M`); if unset, practical read cap is 256 MiB.
 - **Lifetime:** `--one-shot` / `--expire` / `--max-downloads` / `--max-uploads` clear `CTRL_C_RUNNING` after limits; directory listings and HEAD do not count as downloads.
 - **Path safety:** reject `..`, NUL, backslash; component walk with symlink_metadata; out-of-tree symlinks never served; root symlinks need `--follow-symlinks`.
