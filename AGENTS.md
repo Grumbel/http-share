@@ -44,7 +44,7 @@ Keep the single-file style unless a change clearly benefits from a module split.
 | TLS | Persistent self-signed cert under `~/.config/http-share/`; `--dynamic-cert` / `--regenerate-cert` |
 | Auth | HTTP Basic **or** query `?user=&password=` / `?u=&p=`; default random user `share`; `--public` disables |
 | Upload | `--incoming DIR`; GET/POST `/upload`; browsable at `/incoming/` unless `--no-browse-uploads` |
-| QR | Pure-Rust byte-mode ECC-L versions 1–6; `--qr` uses query-auth URL (Android-friendly) |
+| QR / auth | Query-auth (`?user=`/`?password=`) for QR; on success set `http_share_auth` cookie and rewrite HTML links so `/pub/` navigation keeps credentials |
 | Shutdown | Non-blocking accept + SIGINT/SIGTERM → `CTRL_C_RUNNING` |
 | Lifetime | `LifetimeState` atomics; download/upload success or expire stops server |
 | Stats | `TransferStats` — counts + bytes; summary on shutdown |

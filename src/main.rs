@@ -805,19 +805,37 @@ fn format_bytes(n: u64) -> String {
 }
 
 
-fn landing_html(show_upload: bool, show_cert: bool, has_shared: bool, has_incoming: bool) -> String {
+fn landing_html(
+    show_upload: bool,
+    show_cert: bool,
+    has_shared: bool,
+    has_incoming: bool,
+    auth_q: &str,
+) -> String {
     let mut links = String::new();
     if has_shared {
-        links.push_str(r#"<li><a href="/pub/" class="dir">pub/</a><span class="desc">Shared files</span></li>"#);
+        links.push_str(&format!(
+            r#"<li><a href="{}" class="dir">pub/</a><span class="desc">Shared files</span></li>"#,
+            with_auth_query("/pub/", auth_q)
+        ));
     }
     if has_incoming {
-        links.push_str(r#"<li><a href="/incoming/" class="dir">incoming/</a><span class="desc">Uploaded files</span></li>"#);
+        links.push_str(&format!(
+            r#"<li><a href="{}" class="dir">incoming/</a><span class="desc">Uploaded files</span></li>"#,
+            with_auth_query("/incoming/", auth_q)
+        ));
     }
     if show_upload {
-        links.push_str(r#"<li><a href="/upload">upload</a><span class="desc">Upload a file</span></li>"#);
+        links.push_str(&format!(
+            r#"<li><a href="{}">upload</a><span class="desc">Upload a file</span></li>"#,
+            with_auth_query("/upload", auth_q)
+        ));
     }
     if show_cert {
-        links.push_str(r#"<li><a href="/certificate.pem">certificate.pem</a><span class="desc">TLS certificate</span></li>"#);
+        links.push_str(&format!(
+            r#"<li><a href="{}">certificate.pem</a><span class="desc">TLS certificate</span></li>"#,
+            with_auth_query("/certificate.pem", auth_q)
+        ));
     }
     if links.is_empty() {
         links.push_str(r#"<li style="color:#888">Nothing shared</li>"#);
@@ -861,6 +879,7 @@ fn listing_html(
     real_dir: Option<&Path>,
     show_upload: bool,
     show_cert: bool,
+    auth_q: &str,
 ) -> String {
     // (href, display, is_dir, size_label)
     let mut items: Vec<(String, String, bool, String)> = Vec::new();
@@ -938,6 +957,13 @@ fn listing_html(
         }
     });
 
+    // Keep query-auth credentials on every link (QR → browse without losing session)
+    if !auth_q.is_empty() {
+        for item in &mut items {
+            item.0 = with_auth_query(&item.0, auth_q);
+        }
+    }
+
     let title = if virt_path == "pub" {
         "pub"
     } else if virt_path == "/" || virt_path.is_empty() {
@@ -985,6 +1011,7 @@ fn listing_html(
                 "/".to_string()
             }
         };
+        let parent = with_auth_query(&parent, auth_q);
         body.push_str(&format!(
             r#"<li><a href="{}" class="dir">../</a><span class="size"></span></li>"#,
             html_escape(&parent)
@@ -1010,19 +1037,34 @@ fn listing_html(
 
     let mut nav = Vec::new();
     if virt_path != "/" && !virt_path.is_empty() {
-        nav.push(r#"<a href="/">Home</a>"#);
+        nav.push(format!(
+            r#"<a href="{}">Home</a>"#,
+            with_auth_query("/", auth_q)
+        ));
     }
     if virt_path != "pub" {
-        nav.push(r#"<a href="/pub/">Browse /pub/</a>"#);
+        nav.push(format!(
+            r#"<a href="{}">Browse /pub/</a>"#,
+            with_auth_query("/pub/", auth_q)
+        ));
     }
     if show_upload {
-        nav.push(r#"<a href="/upload">Upload a file…</a>"#);
+        nav.push(format!(
+            r#"<a href="{}">Upload a file…</a>"#,
+            with_auth_query("/upload", auth_q)
+        ));
     }
     if vfs.dirs.contains_key("incoming") && !virt_path.starts_with("incoming") {
-        nav.push(r#"<a href="/incoming/">Browse /incoming/</a>"#);
+        nav.push(format!(
+            r#"<a href="{}">Browse /incoming/</a>"#,
+            with_auth_query("/incoming/", auth_q)
+        ));
     }
     if show_cert {
-        nav.push(r#"<a href="/certificate.pem">Download certificate.pem</a>"#);
+        nav.push(format!(
+            r#"<a href="{}">Download certificate.pem</a>"#,
+            with_auth_query("/certificate.pem", auth_q)
+        ));
     }
     if !nav.is_empty() {
         body.push_str(r#"<p class="nav">"#);
@@ -1083,11 +1125,24 @@ fn write_response(
     Ok(())
 }
 
+fn html_headers(content_len: usize, set_cookie: &Option<String>) -> Vec<(&str, String)> {
+    let mut h = vec![
+        ("Content-Type", "text/html; charset=utf-8".into()),
+        ("Content-Length", content_len.to_string()),
+        ("Cache-Control", "no-store".into()),
+    ];
+    if let Some(c) = set_cookie {
+        h.push(("Set-Cookie", c.clone()));
+    }
+    h
+}
+
 fn serve_file(
     stream: &mut dyn Write,
     path: &Path,
     range_header: Option<&str>,
     head_only: bool,
+    set_cookie: &Option<String>,
 ) -> io::Result<u64> {
     let mut file = File::open(path)?;
     let meta = file.metadata()?;
@@ -1097,13 +1152,16 @@ fn serve_file(
     if let Some(rh) = range_header {
         if let Some((start, end)) = parse_range(rh, len) {
             let to_read = end - start + 1;
-            let headers = [
+            let mut headers = vec![
                 ("Content-Type", mime.to_string()),
                 ("Content-Length", to_read.to_string()),
                 ("Content-Range", format!("bytes {start}-{end}/{len}")),
                 ("Accept-Ranges", "bytes".into()),
                 ("Cache-Control", "no-store".into()),
             ];
+            if let Some(c) = set_cookie {
+                headers.push(("Set-Cookie", c.clone()));
+            }
             if head_only {
                 write_response(stream, 206, "Partial Content", &headers, b"")?;
                 return Ok(0);
@@ -1116,15 +1174,13 @@ fn serve_file(
         }
     }
 
-    let headers = [
-        ("Content-Type", mime.to_string()),
-        ("Content-Length", len.to_string()),
-        ("Accept-Ranges", "bytes".into()),
-        ("Cache-Control", "no-store".into()),
-    ];
     write!(stream, "HTTP/1.1 200 OK\r\n")?;
-    for (k, v) in &headers {
-        write!(stream, "{k}: {v}\r\n")?;
+    write!(stream, "Content-Type: {mime}\r\n")?;
+    write!(stream, "Content-Length: {len}\r\n")?;
+    write!(stream, "Accept-Ranges: bytes\r\n")?;
+    write!(stream, "Cache-Control: no-store\r\n")?;
+    if let Some(c) = set_cookie {
+        write!(stream, "Set-Cookie: {c}\r\n")?;
     }
     write!(stream, "Connection: close\r\n\r\n")?;
     if head_only {
@@ -1182,7 +1238,8 @@ fn parse_query(q: &str) -> HashMap<String, String> {
     map
 }
 
-/// Accept Basic Auth header **or** query credentials (`user`/`password` or short `u`/`p`).
+/// Accept Basic Auth header, query credentials (`user`/`password` or `u`/`p`),
+/// or the `http_share_auth` session cookie set after a successful query-auth.
 /// Query form is for QR scanners / clients that cannot handle `user:pass@host` userinfo.
 fn check_auth(
     headers: &HashMap<String, String>,
@@ -1193,6 +1250,13 @@ fn check_auth(
     if check_basic_auth(headers, user, pass) {
         return true;
     }
+    if query_credentials_match(query, user, pass) {
+        return true;
+    }
+    check_cookie_auth(headers, user, pass)
+}
+
+fn query_credentials_match(query: &HashMap<String, String>, user: &str, pass: &str) -> bool {
     let q_user = query
         .get("user")
         .or_else(|| query.get("u"))
@@ -1202,9 +1266,60 @@ fn check_auth(
         .or_else(|| query.get("pass"))
         .or_else(|| query.get("p"))
         .map(|s| s.as_str());
-    match (q_user, q_pass) {
-        (Some(u), Some(p)) => u == user && p == pass,
-        _ => false,
+    matches!((q_user, q_pass), (Some(u), Some(p)) if u == user && p == pass)
+}
+
+/// Cookie value is base64(`user:pass`), same encoding as Basic Auth.
+fn check_cookie_auth(headers: &HashMap<String, String>, user: &str, pass: &str) -> bool {
+    let Some(cookie_hdr) = headers.get("cookie") else {
+        return false;
+    };
+    for part in cookie_hdr.split(';') {
+        let part = part.trim();
+        let Some((name, val)) = part.split_once('=') else {
+            continue;
+        };
+        if name.trim() != "http_share_auth" {
+            continue;
+        }
+        let Ok(decoded) = B64.decode(val.trim()) else {
+            return false;
+        };
+        let Ok(s) = String::from_utf8(decoded) else {
+            return false;
+        };
+        let Some((u, p)) = s.split_once(':') else {
+            return false;
+        };
+        return u == user && p == pass;
+    }
+    false
+}
+
+fn auth_set_cookie(user: &str, pass: &str) -> String {
+    let token = B64.encode(format!("{user}:{pass}"));
+    format!("http_share_auth={token}; Path=/; HttpOnly; SameSite=Lax")
+}
+
+/// Query suffix to append to internal links so navigation keeps credentials
+/// when the client does not yet send the session cookie (first page after QR).
+fn auth_query_suffix(user: &str, pass: &str) -> String {
+    format!(
+        "?user={}&password={}",
+        url_encode_component(user),
+        url_encode_component(pass)
+    )
+}
+
+fn with_auth_query(href: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        return href.to_string();
+    }
+    if href.contains('?') {
+        // suffix starts with '?'; append as '&…'
+        format!("{}&{}", href, &suffix[1..])
+    } else {
+        format!("{href}{suffix}")
     }
 }
 
@@ -1246,41 +1361,52 @@ fn unauthorized(stream: &mut dyn Write) -> io::Result<()> {
 }
 
 
-fn upload_form_html() -> String {
-    r#"<!DOCTYPE html>
+fn upload_form_html(auth_q: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Upload — http-share</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 28rem; color: #222; }
-  h1 { font-size: 1.2rem; }
-  form { margin-top: 1.5rem; }
-  input[type=file] { display: block; margin: 1rem 0; }
-  button { padding: 0.5rem 1.2rem; font-size: 1rem; cursor: pointer; }
-  a { color: #06c; }
-  .msg { margin-top: 1rem; padding: 0.75rem; background: #f0f7ff; border-radius: 4px; }
-  .err { background: #fff0f0; }
+  body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 28rem; color: #222; }}
+  h1 {{ font-size: 1.2rem; }}
+  form {{ margin-top: 1.5rem; }}
+  input[type=file] {{ display: block; margin: 1rem 0; }}
+  button {{ padding: 0.5rem 1.2rem; font-size: 1rem; cursor: pointer; }}
+  a {{ color: #06c; }}
+  .msg {{ margin-top: 1rem; padding: 0.75rem; background: #f0f7ff; border-radius: 4px; }}
+  .err {{ background: #fff0f0; }}
 </style>
 </head>
 <body>
 <h1>Upload a file</h1>
-<p><a href="/">← Home</a> · <a href="/pub/">/pub/</a></p>
-<form method="POST" action="/upload" enctype="multipart/form-data">
+<p><a href="{home}">← Home</a> · <a href="{pub}">/pub/</a></p>
+<form method="POST" action="{action}" enctype="multipart/form-data">
   <input type="file" name="file" required>
   <button type="submit">Upload</button>
 </form>
 </body>
-</html>"#.to_string()
+</html>"#,
+        home = with_auth_query("/", auth_q),
+        pub = with_auth_query("/pub/", auth_q),
+        action = with_auth_query("/upload", auth_q),
+    )
 }
 
-fn upload_result_html(ok: bool, message: &str, browse_href: Option<&str>) -> String {
+fn upload_result_html(
+    ok: bool,
+    message: &str,
+    browse_href: Option<&str>,
+    auth_q: &str,
+) -> String {
     let cls = if ok { "msg" } else { "msg err" };
     let file_link = match browse_href {
         Some(href) if ok => format!(
-            r#"<p><a href="{}">Open uploaded file</a> · <a href="/incoming/">Browse /incoming/</a></p>"#,
-            html_escape(href)
+            r#"<p><a href="{0}">Open uploaded file</a> · <a href="{1}">Browse /incoming/</a></p>"#,
+            html_escape(&with_auth_query(href, auth_q)),
+            html_escape(&with_auth_query("/incoming/", auth_q)),
         ),
         _ => String::new(),
     };
@@ -1301,14 +1427,17 @@ fn upload_result_html(ok: bool, message: &str, browse_href: Option<&str>) -> Str
 </head>
 <body>
 <h1>Upload</h1>
-<p><a href="/upload">Upload another</a> · <a href="/">Home</a> · <a href="/pub/">/pub/</a></p>
+<p><a href="{upload}">Upload another</a> · <a href="{home}">Home</a> · <a href="{pub}">/pub/</a></p>
 <div class="{cls}">{msg}</div>
 {file_link}
 </body>
 </html>"#,
         cls = cls,
         msg = html_escape(message),
-        file_link = file_link
+        file_link = file_link,
+        upload = with_auth_query("/upload", auth_q),
+        home = with_auth_query("/", auth_q),
+        pub = with_auth_query("/pub/", auth_q),
     )
 }
 
@@ -1629,10 +1758,18 @@ fn handle_request(
     let query = parse_query(query_str);
     let decoded = percent_decode(path_only);
 
+    // When the client used query-auth, keep credentials on HTML links and set a
+    // session cookie so subsequent navigations (and POSTs) work without re-auth.
+    let mut auth_q = String::new();
+    let mut set_cookie: Option<String> = None;
     if let Some((user, pass)) = auth {
         if !check_auth(&headers, &query, user, pass) {
             let _ = unauthorized(stream);
             return;
+        }
+        if query_credentials_match(&query, user, pass) {
+            auth_q = auth_query_suffix(user, pass);
+            set_cookie = Some(auth_set_cookie(user, pass));
         }
     }
 
@@ -1646,12 +1783,15 @@ fn handle_request(
     if method == "GET" || method == "HEAD" {
         if decoded == "/certificate.pem" || decoded == "certificate.pem" {
             if let Some(pem) = cert_pem {
-                let headers = [
+                let mut headers = vec![
                     ("Content-Type", "application/x-pem-file".into()),
                     ("Content-Length", pem.len().to_string()),
                     ("Content-Disposition", "attachment; filename=\"certificate.pem\"".into()),
                     ("Cache-Control", "no-store".into()),
                 ];
+                if let Some(c) = &set_cookie {
+                    headers.push(("Set-Cookie", c.clone()));
+                }
                 if method == "HEAD" {
                     let _ = write_response(stream, 200, "OK", &headers, b"");
                 } else {
@@ -1666,12 +1806,8 @@ fn handle_request(
     if let Some(uc) = upload {
         if decoded == "/upload" || decoded == "upload" {
             if method == "GET" || method == "HEAD" {
-                let html = upload_form_html();
-                let headers = [
-                    ("Content-Type", "text/html; charset=utf-8".into()),
-                    ("Content-Length", html.len().to_string()),
-                    ("Cache-Control", "no-store".into()),
-                ];
+                let html = upload_form_html(&auth_q);
+                let headers = html_headers(html.len(), &set_cookie);
                 if method == "HEAD" {
                     let _ = write_response(stream, 200, "OK", &headers, b"");
                 } else {
@@ -1705,14 +1841,10 @@ fn handle_request(
                     }
                     Err(e) => (false, e, None),
                 };
-                let html = upload_result_html(ok, &msg, browse_href.as_deref());
+                let html = upload_result_html(ok, &msg, browse_href.as_deref(), &auth_q);
                 let status = if ok { 201 } else { 400 };
                 let reason = if ok { "Created" } else { "Bad Request" };
-                let headers = [
-                    ("Content-Type", "text/html; charset=utf-8".into()),
-                    ("Content-Length", html.len().to_string()),
-                    ("Cache-Control", "no-store".into()),
-                ];
+                let headers = html_headers(html.len(), &set_cookie);
                 let _ = write_response(stream, status, reason, &headers, html.as_bytes());
                 return;
             }
@@ -1755,12 +1887,8 @@ fn handle_request(
 
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
-            let html = landing_html(show_upload, show_cert, has_shared, has_incoming);
-            let headers = [
-                ("Content-Type", "text/html; charset=utf-8".into()),
-                ("Content-Length", html.len().to_string()),
-                ("Cache-Control", "no-store".into()),
-            ];
+            let html = landing_html(show_upload, show_cert, has_shared, has_incoming, &auth_q);
+            let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
             } else {
@@ -1772,12 +1900,8 @@ fn handle_request(
                 let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
                 return;
             }
-            let html = listing_html(vfs, "pub", None, show_upload, show_cert);
-            let headers = [
-                ("Content-Type", "text/html; charset=utf-8".into()),
-                ("Content-Length", html.len().to_string()),
-                ("Cache-Control", "no-store".into()),
-            ];
+            let html = listing_html(vfs, "pub", None, show_upload, show_cert, &auth_q);
+            let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
             } else {
@@ -1785,7 +1909,7 @@ fn handle_request(
             }
         }
         Some(Resolved::File(path)) => {
-            match serve_file(stream, &path, range_header, head_only) {
+            match serve_file(stream, &path, range_header, head_only, &set_cookie) {
                 Ok(nbytes) => {
                     // Count successful GET of a real file (not HEAD, not listings)
                     if !head_only {
@@ -1808,12 +1932,8 @@ fn handle_request(
             }
         }
         Some(Resolved::Dir(real, virt)) => {
-            let html = listing_html(vfs, &virt, Some(&real), show_upload, show_cert);
-            let headers = [
-                ("Content-Type", "text/html; charset=utf-8".into()),
-                ("Content-Length", html.len().to_string()),
-                ("Cache-Control", "no-store".into()),
-            ];
+            let html = listing_html(vfs, &virt, Some(&real), show_upload, show_cert, &auth_q);
+            let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
             } else {
