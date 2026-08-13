@@ -18,9 +18,9 @@ pub(crate) fn qr_print(text: &str) {
                         false
                     };
                     if on {
-                        print!("██");
-                    } else {
                         print!("  ");
+                    } else {
+                        print!("██");
                     }
                 }
                 println!();
