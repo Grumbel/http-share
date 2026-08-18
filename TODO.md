@@ -17,7 +17,7 @@ Derived from PROPOSAL.md.
 - [x] Create basic `src/main.rs` skeleton (CLI parse + working server)
 - [x] Create `flake.nix` (packages.default, apps.default, devShell, checks, formatter)
 - [x] Ensure project builds with `cargo build`
-- [ ] Ensure project builds with `nix build` (nix not available in this environment)
+- [x] Ensure project builds with `nix build`
 
 ## Phase 1: Core server & virtual filesystem
 
@@ -118,4 +118,6 @@ Derived from PROPOSAL.md.
 - [x] `http-share .` flattens CWD contents into the virtual root (not under CWD basename)
 - [x] add a text field that allows sending human readable messages to the server
 - [x] need better reporting of errors (HTML error pages + clearer server logs)
-- [ ] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
+- [x] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
+- [x] Flexible virtual mounts: PATH/, NAME=PATH, --mount NAME=PATH
+

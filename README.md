@@ -74,6 +74,22 @@ Shared content is organized FTP-style:
 
 Example: `http-share report.pdf photos/` serves `report.pdf` at `/report.pdf` and the folder at `/photos/`.
 
+### Flexible mounts
+
+| Token | Effect |
+|-------|--------|
+| `PATH` | Share as `/basename` |
+| `PATH/` | Share *contents* of a directory at the site root |
+| `NAME=PATH` | Mount `PATH` as `/NAME` |
+| `--mount NAME=PATH` | Same as `NAME=PATH` (repeatable; use `--mount NAME PATH` if the path contains `=`) |
+
+```sh
+http-share photos/                  # children of photos at /
+http-share docs=./Documents         # /docs/ → Documents
+http-share --mount readme NOTES.txt # /readme → NOTES.txt
+```
+
+
 ## Authentication
 
 **Default:** random username (`share`) and password. Printed URLs already include credentials.

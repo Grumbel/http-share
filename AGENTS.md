@@ -55,7 +55,7 @@ modules next to the code they cover (`cargo test`).
 | Area | Notes |
 |------|--------|
 | CLI | `Args`, `parse_args()`, `print_usage()` — extend here for new flags |
-| VFS | `Vfs`, `Resolved` — shared at root; extra mounts (e.g. `incoming`); listing at `/` |
+| VFS | `Vfs`, `ShareSpec`, `Resolved` — `PATH` / `PATH/` / `NAME=PATH` / `--mount`; extra mounts (e.g. `incoming`); listing at `/` |
 | HTTP | Manual request parse; `handle_request`; range GETs; HTML listings |
 | TLS | Persistent self-signed cert under `~/.config/http-share/`; `--dynamic-cert` / `--regenerate-cert` |
 | Auth | HTTP Basic **or** query `?user=&password=` / `?u=&p=`; default random user `share`; `--public` disables |
