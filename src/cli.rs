@@ -12,7 +12,7 @@ use std::time::Duration;
 pub(crate) const VERSION: &str = env!("HTTP_SHARE_VERSION");
 
 pub(crate) struct Args {
-    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) shares: Vec<crate::vfs::ShareSpec>,
     pub(crate) port: u16,
     pub(crate) bind: String,
     pub(crate) verbose: bool,
@@ -46,6 +46,14 @@ Never exposes the current working directory implicitly.
 
 Shared files are served at the site root. Uploads go to /incoming/.
 
+Share selection (rsync-like):
+  PATH                 Share PATH as /basename
+  PATH/                Share *contents* of directory PATH at the root
+  NAME=PATH            Mount PATH as /NAME
+  NAME=PATH/           Same as NAME=PATH for directories
+  --mount NAME=PATH    Same as NAME=PATH (repeatable)
+  --mount NAME PATH    Two-argument form (paths may contain '=')
+
 Network:
   -p, --port PORT          Port to listen on (default: 8000)
       --bind ADDRESS       Address to bind (default: 0.0.0.0)
@@ -54,6 +62,7 @@ Network:
       --qr                 Print a terminal QR code (query-auth URL when auth is on)
 
 Share selection:
+      --mount NAME=PATH    Mount PATH as /NAME (repeatable)
       --follow-symlinks    Follow symbolic links when sharing paths
 
 Authentication:
@@ -103,7 +112,7 @@ pub(crate) fn parse_args() -> Args {
     let program = args.first().cloned().unwrap_or_else(|| "http-share".into());
     args.remove(0);
 
-    let mut paths = Vec::new();
+    let mut shares: Vec<crate::vfs::ShareSpec> = Vec::new();
     let mut port: u16 = 8000;
     let mut bind = "0.0.0.0".to_string();
     let mut verbose = false;
@@ -160,6 +169,47 @@ pub(crate) fn parse_args() -> Args {
             }
             "-v" | "--verbose" => verbose = true,
             "--follow-symlinks" => follow_symlinks = true,
+            "--mount" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --mount requires NAME=PATH or NAME PATH");
+                    std::process::exit(1);
+                }
+                let first = args[i].clone();
+                if first.contains('=') {
+                    match crate::vfs::ShareSpec::parse(&first) {
+                        Ok(s) => shares.push(s),
+                        Err(e) => {
+                            eprintln!("error: --mount: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    // Two-arg form: --mount NAME PATH
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("error: --mount NAME requires a PATH argument");
+                        std::process::exit(1);
+                    }
+                    let name = first;
+                    let path = args[i].clone();
+                    if name.contains('/') || name == "." || name == ".." {
+                        eprintln!("error: --mount: virtual name must be a single path component");
+                        std::process::exit(1);
+                    }
+                    let flatten = path.ends_with('/') && path != "/";
+                    let path_str = if flatten {
+                        path.trim_end_matches('/').to_string()
+                    } else {
+                        path
+                    };
+                    shares.push(crate::vfs::ShareSpec {
+                        virt: Some(name),
+                        path: PathBuf::from(path_str),
+                        flatten,
+                    });
+                }
+            },
             "--public" => public = true,
             "--open" => open = true,
             "--qr" => qr = true,
@@ -245,12 +295,18 @@ pub(crate) fn parse_args() -> Args {
                 print_usage(&program);
                 std::process::exit(1);
             }
-            _ => paths.push(PathBuf::from(a)),
+            _ => match crate::vfs::ShareSpec::parse(a) {
+                Ok(s) => shares.push(s),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            },
         }
         i += 1;
     }
 
-    if paths.is_empty() && incoming.is_none() {
+    if shares.is_empty() && incoming.is_none() {
         eprintln!("error: at least one path is required (or --incoming DIR)");
         print_usage(&program);
         std::process::exit(1);
@@ -294,7 +350,7 @@ pub(crate) fn parse_args() -> Args {
     }
 
     Args {
-        paths,
+        shares,
         port,
         bind,
         verbose,

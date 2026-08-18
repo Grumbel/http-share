@@ -62,7 +62,7 @@ fn install_ctrlc_handler() {
 fn main() {
     let args = parse_args();
 
-    let mut vfs = match Vfs::from_paths(&args.paths, args.follow_symlinks) {
+    let mut vfs = match Vfs::from_shares(&args.shares, args.follow_symlinks) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
