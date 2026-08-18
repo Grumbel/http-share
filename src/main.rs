@@ -94,7 +94,9 @@ fn main() {
 
     if args.tree {
         let (nf, nd) = vfs.top_level_count();
-        eprintln!("virtual filesystem ({nf} top-level file(s), {nd} directory(ies)):");
+        eprintln!();
+        eprintln!("Virtual filesystem ({nf} top-level file(s), {nd} directory(ies)):");
+        eprintln!();
         for line in vfs.describe_shares() {
             eprintln!("{line}");
         }
@@ -105,6 +107,7 @@ fn main() {
                 args.browse_uploads
             );
         }
+        eprintln!();
     } else if args.verbose {
         let (nf, nd) = vfs.top_level_count();
         eprintln!("sharing {nf} top-level file(s), {nd} top-level directory(ies)");
@@ -186,12 +189,16 @@ fn main() {
         }
     };
 
+    println!();
     println!("http-share listening on {scheme}://{addr}/");
+    println!();
 
     let bind_all_v4 = bind_host == "0.0.0.0";
     let bind_all_v6 = bind_host == "::";
     let mut primary_url: Option<String> = None;
+    let mut printed_url = false;
 
+    println!("URLs:");
     for ip in local_ips() {
         let show = if bind_all_v4 {
             !is_ipv6(&ip)
@@ -210,6 +217,7 @@ fn main() {
             primary_url = Some(url.clone());
         }
         println!("  {url}");
+        printed_url = true;
     }
     if primary_url.is_none() {
         let fallback_ip = if bind_all_v6 || is_ipv6(bind_host) {
@@ -222,52 +230,73 @@ fn main() {
         primary_url = Some(build_share_url(scheme, &host, args.port, auth_ref, false));
         if !bind_all_v4 && !bind_all_v6 {
             println!("  {}", primary_url.as_ref().unwrap());
+            printed_url = true;
         }
     }
+    if !printed_url {
+        if let Some(ref url) = primary_url {
+            println!("  {url}");
+        }
+    }
+    println!();
+
+    println!("Auth:");
     if auth.is_some() {
-        println!("  authentication: HTTP Basic Auth (credentials in URLs above)");
-        println!("  QR / mobile tip: use query form ?user=…&password=… (see --qr)");
+        println!("  HTTP Basic Auth (credentials in URLs above)");
+        println!("  QR / mobile tip: use ?user=…&password=… (see --qr / --rq)");
     } else {
-        println!("  authentication: disabled (--public)");
+        println!("  disabled (--public)");
     }
+    println!();
+
     if args.https {
-        println!("  certificate: {scheme}://…/certificate.pem (also linked from directory pages)");
+        println!("TLS:");
+        println!("  certificate: {scheme}://…/certificate.pem");
+        println!();
     }
+
     if let Some(ref uc) = upload_cfg {
+        println!("Uploads:");
         println!(
-            "  uploads: {} → {}",
-            if uc.upload_only { "only" } else { "enabled" },
-            uc.dir.display()
+            "  mode: {}",
+            if uc.upload_only { "upload-only" } else { "enabled" }
         );
+        println!("  directory: {}", uc.dir.display());
         if args.browse_uploads {
-            println!("  uploaded files: {scheme}://…/incoming/");
+            println!("  browse: {scheme}://…/incoming/");
         } else {
-            println!("  uploaded files: not browsable (--no-browse-uploads)");
+            println!("  browse: disabled (--no-browse-uploads)");
         }
         if let Some(max) = uc.max_size {
-            println!("  max upload size: {max} bytes");
+            println!("  max size: {max} bytes");
         }
-        println!("  upload form: {scheme}://…/upload");
+        println!("  form: {scheme}://…/upload");
+        println!();
     }
+
     if let Some(ref lt) = lifetime {
+        println!("Lifetime:");
         if lt.one_shot {
-            println!("  lifetime: one-shot (stop after first successful transfer)");
+            println!("  one-shot (stop after first successful transfer)");
         }
         if let Some(d) = lt.expire {
-            println!("  lifetime: expire after {d:?}");
+            println!("  expire after {d:?}");
         }
         if let Some(n) = lt.max_downloads {
-            println!("  lifetime: max-downloads {n}");
+            println!("  max-downloads {n}");
         }
         if let Some(n) = lt.max_uploads {
-            println!("  lifetime: max-uploads {n}");
+            println!("  max-uploads {n}");
         }
+        println!();
     }
+
     if args.open {
         if let Some(ref url) = primary_url {
             open_browser(url);
         }
     }
+
     if args.qr || args.rq {
         // Prefer query-parameter credentials for QR: many Android scanners do not
         // preserve userinfo (user:pass@host) when opening the URL.
@@ -305,7 +334,9 @@ fn main() {
             }
         }
     }
+
     println!("Press Ctrl+C to stop.");
+    println!();
 
     install_ctrlc_handler();
     CTRL_C_RUNNING.store(true, Ordering::SeqCst);
