@@ -31,7 +31,7 @@ Task tracking: `TODO.md`.
 src/
   main.rs       # entry point, accept loop, signal handler
   cli.rs        # Args, parse_args, print_usage, duration/size parsers
-  vfs.rs        # virtual filesystem (/pub/, /incoming/), path safety
+  vfs.rs        # virtual filesystem (root + /incoming/), path safety
   util.rs       # percent-encoding, mime, ranges, query parse, helpers
   auth.rs       # Basic / query / cookie auth
   html.rs       # landing, listings, upload form HTML
@@ -55,12 +55,12 @@ modules next to the code they cover (`cargo test`).
 | Area | Notes |
 |------|--------|
 | CLI | `Args`, `parse_args()`, `print_usage()` — extend here for new flags |
-| VFS | `Vfs`, `Resolved` — shared under `/pub/`; extra mounts (e.g. `incoming`); landing at `/` |
+| VFS | `Vfs`, `Resolved` — shared at root; extra mounts (e.g. `incoming`); listing at `/` |
 | HTTP | Manual request parse; `handle_request`; range GETs; HTML listings |
 | TLS | Persistent self-signed cert under `~/.config/http-share/`; `--dynamic-cert` / `--regenerate-cert` |
 | Auth | HTTP Basic **or** query `?user=&password=` / `?u=&p=`; default random user `share`; `--public` disables |
 | Upload | `--incoming DIR`; GET/POST `/upload`; browsable at `/incoming/` unless `--no-browse-uploads` |
-| QR / auth | Query-auth (`?user=`/`?password=`) for QR; on success set `http_share_auth` cookie and rewrite HTML links so `/pub/` navigation keeps credentials |
+| QR / auth | Query-auth (`?user=`/`?password=`) for QR; on success set `http_share_auth` cookie and rewrite HTML links so navigation keeps credentials |
 | Shutdown | Non-blocking accept + SIGINT/SIGTERM → `CTRL_C_RUNNING` |
 | Lifetime | `LifetimeState` atomics; download/upload success or expire stops server |
 | Stats | `TransferStats` — counts + bytes; summary on shutdown |
@@ -68,7 +68,7 @@ modules next to the code they cover (`cargo test`).
 ### Important behaviors
 
 - **Paths:** at least one path **or** `--incoming DIR` required.
-- **URL layout (FTP-style):** `/` landing; CLI shares under `/pub/`; uploads under `/incoming/`; form at `/upload`; cert at `/certificate.pem`.
+- **URL layout:** `/` lists shared CLI paths; uploads under `/incoming/`; form at `/upload`; cert at `/certificate.pem`.
 - **URLs:** userinfo credentials in printed URLs; `--qr` uses `?user=&password=` (many Android QR readers drop userinfo).
 - **Listings:** show file sizes; link to cert download when HTTPS; link to `/incoming/` when mounted.
 - **Uploads:** basename-only filenames; reject `../`; unique `name-N.ext` unless `--allow-overwrite`.

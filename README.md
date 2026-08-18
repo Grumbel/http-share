@@ -66,13 +66,13 @@ Shared content is organized FTP-style:
 | Path | What it is |
 |------|------------|
 | `/` | Landing page with links |
-| `/pub/` | Files and directories you passed on the command line |
-| `/pub/<name>` | A shared file or folder |
+| `/` | Listing of files and directories you passed on the command line |
+| `/<name>` | A shared file or folder |
 | `/incoming/` | Uploaded files (when uploads are enabled) |
 | `/upload` | Upload form |
 | `/certificate.pem` | Server TLS certificate (HTTPS only) |
 
-Example: `http-share report.pdf photos/` serves `report.pdf` at `/pub/report.pdf` and the folder at `/pub/photos/`.
+Example: `http-share report.pdf photos/` serves `report.pdf` at `/report.pdf` and the folder at `/photos/`.
 
 ## Authentication
 
@@ -97,7 +97,7 @@ Many Android QR scanners do not handle `user:pass@host` in URLs. Use `--qr`: the
 http://192.168.1.15:8000/?user=share&password=…
 ```
 
-After the first successful login that way, the server sets a short session cookie and keeps credentials on page links so browsing `/pub/` continues to work.
+After the first successful login that way, the server sets a short session cookie and keeps credentials on page links so browsing continues to work.
 
 You can also type query auth manually: `?user=…&password=…` or short `?u=…&p=…`.
 
@@ -128,7 +128,7 @@ http-share --incoming /tmp/inbox ./readme.txt
 | Flag | Effect |
 |------|--------|
 | `--incoming DIR` | Enable uploads into `DIR` |
-| `--upload-only` | Only uploads (no `/pub/` downloads) |
+| `--upload-only` | Only uploads (no shared-path downloads) |
 | `--max-upload-size 100M` | Cap upload size (`K`/`M`/`G`) |
 | `--allow-overwrite` | Replace existing names |
 | `--no-browse-uploads` | Hide `/incoming/` from the browser |

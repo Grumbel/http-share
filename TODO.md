@@ -89,8 +89,8 @@ Derived from PROPOSAL.md.
 - [x] `--no-browse-uploads` to hide uploaded files from the VFS
 - [x] Query-parameter auth (`?user=` / `?password=` or `?u=` / `?p=`) for QR / Android
 - [x] `--qr` encodes query-auth URL (not `user:pass@host` userinfo)
-- [x] FTP-style URL layout: shared files under `/pub/`, uploads under `/incoming/`
-- [x] Landing page at `/` with links to pub / incoming / upload / cert
+- [x] Shared files at site root; uploads under `/incoming/`
+- [x] Root listing of shared paths with nav links to incoming / upload / cert
 - [x] Post-upload result page links to `/incoming/<file>`
 - [x] Grouped `--help` output (Network, Auth, TLS, Uploads, Lifetime, …)
 
@@ -109,5 +109,12 @@ Derived from PROPOSAL.md.
 - Phase 5 upload mode: `--incoming`, `/upload`, multipart, unique names, size limits.
 - Phase 6 lifetime: `--one-shot`, `--expire`, `--max-downloads`, `--max-uploads`.
 - Default: random Basic Auth credentials embedded in printed URLs.
-- Phase 8 complete: FTP-style `/pub/` + `/incoming/`, landing page, sizes, cert link,
+- Phase 8 complete: shared files at root + `/incoming/`, sizes, cert link,
   query-auth QR, grouped `--help`, post-upload file links.
+## Open / agent TODO
+
+- [x] Remove `/pub/` subdirectory; shared paths live at the virtual root
+- [x] `http-share .` flattens CWD contents into the virtual root (not under CWD basename)
+- [ ] add a text field that allows sending human readable messages to the server
+- [ ] need better reporting of errors
+- [ ] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
