@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 ///
 /// * `virt = None`, `flatten = false` — mount under the path's basename.
 /// * `virt = None`, `flatten = true` — mount directory *contents* at the root.
-/// * `virt = Some(name)`, `flatten = false` — mount the path as `/name`
-///   (from `--mount NAME PATH`).
+/// * `virt = Some(name)`, `flatten = false` — expose the path as `/name`
+///   (from `--map PATH VIRT`).
 /// * Trailing slash on PATH only affects root-level flatten (`PATH/`).
 #[derive(Debug, Clone)]
 pub(crate) struct ShareSpec {
@@ -25,7 +25,7 @@ pub(crate) struct ShareSpec {
 
 impl ShareSpec {
     /// Parse a positional share token: `PATH` or `PATH/` (contents at root).
-    /// Renames use `--mount NAME PATH`, not `NAME=PATH`.
+    /// Renames use `--map PATH VIRT`.
     pub(crate) fn parse(token: &str) -> Result<Self, String> {
         let token = token.trim();
         if token.is_empty() {
@@ -48,28 +48,28 @@ impl ShareSpec {
         })
     }
 
-    /// Build a named mount from `--mount NAME PATH` (PATH may end with `/`).
-    pub(crate) fn mount(name: &str, path_token: &str) -> Result<Self, String> {
-        let name = name.trim();
-        if name.is_empty() {
+    /// Build a named mapping from `--map PATH VIRT` (PATH may end with `/`).
+    pub(crate) fn map(path_token: &str, virt: &str) -> Result<Self, String> {
+        let virt = virt.trim();
+        if virt.is_empty() {
             return Err("virtual name must not be empty".into());
         }
-        if name.contains('/') || name == "." || name == ".." {
+        if virt.contains('/') || virt == "." || virt == ".." {
             return Err(format!(
-                "invalid virtual name '{name}': must be a single path component"
+                "invalid virtual name '{virt}': must be a single path component"
             ));
         }
-        if name == "incoming"
-            || name == "upload"
-            || name == "message"
-            || name == "certificate.pem"
+        if virt == "incoming"
+            || virt == "upload"
+            || virt == "message"
+            || virt == "certificate.pem"
         {
-            return Err(format!("virtual name '{name}' is reserved"));
+            return Err(format!("virtual name '{virt}' is reserved"));
         }
 
         let path_token = path_token.trim();
         if path_token.is_empty() {
-            return Err("mount path must not be empty".into());
+            return Err("map path must not be empty".into());
         }
         let flatten = path_token.ends_with('/') && path_token != "/";
         let path_str = if flatten {
@@ -78,10 +78,10 @@ impl ShareSpec {
             path_token
         };
         if path_str.is_empty() {
-            return Err("mount path must not be empty".into());
+            return Err("map path must not be empty".into());
         }
         Ok(ShareSpec {
-            virt: Some(name.to_string()),
+            virt: Some(virt.to_string()),
             path: PathBuf::from(path_str),
             flatten,
         })
@@ -490,19 +490,19 @@ mod tests {
         assert!(s.virt.is_none());
         assert_eq!(s.path, PathBuf::from("foo=bar.txt"));
 
-        let s = ShareSpec::mount("docs", "./MyDocs").unwrap();
+        let s = ShareSpec::map("./MyDocs", "docs").unwrap();
         assert_eq!(s.virt.as_deref(), Some("docs"));
         assert!(!s.flatten);
         assert_eq!(s.path, PathBuf::from("./MyDocs"));
 
-        let s = ShareSpec::mount("docs", "./MyDocs/").unwrap();
+        let s = ShareSpec::map("./MyDocs/", "docs").unwrap();
         assert_eq!(s.virt.as_deref(), Some("docs"));
         assert!(s.flatten);
         assert_eq!(s.path, PathBuf::from("./MyDocs"));
 
-        assert!(ShareSpec::mount("", "foo").is_err());
-        assert!(ShareSpec::mount("a/b", "foo").is_err());
-        assert!(ShareSpec::mount("incoming", "foo").is_err());
+        assert!(ShareSpec::map("foo", "").is_err());
+        assert!(ShareSpec::map("foo", "a/b").is_err());
+        assert!(ShareSpec::map("foo", "incoming").is_err());
     }
 
     #[test]

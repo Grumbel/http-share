@@ -49,7 +49,7 @@ Shared files are served at the site root. Uploads go to /incoming/.
 Share selection (rsync-like):
   PATH                 Share PATH as /basename
   PATH/                Share *contents* of directory PATH at the root
-  --mount NAME PATH    Mount PATH as /NAME (repeatable; NAME is one component)
+  --map PATH VIRT      Expose PATH as /VIRT (repeatable; VIRT is one component)
 
 Network:
   -p, --port PORT          Port to listen on (default: 8000)
@@ -59,7 +59,7 @@ Network:
       --qr                 Print a terminal QR code (query-auth URL when auth is on)
 
 Share selection:
-      --mount NAME PATH    Mount PATH as /NAME (repeatable)
+      --map PATH VIRT      Expose PATH as /VIRT (repeatable)
       --follow-symlinks    Follow symbolic links when sharing paths
 
 Authentication:
@@ -166,23 +166,23 @@ pub(crate) fn parse_args() -> Args {
             }
             "-v" | "--verbose" => verbose = true,
             "--follow-symlinks" => follow_symlinks = true,
-            "--mount" => {
+            "--map" => {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("error: --mount requires NAME and PATH");
-                    std::process::exit(1);
-                }
-                let name = args[i].clone();
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("error: --mount requires NAME and PATH");
+                    eprintln!("error: --map requires PATH and VIRT");
                     std::process::exit(1);
                 }
                 let path = args[i].clone();
-                match crate::vfs::ShareSpec::mount(&name, &path) {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --map requires PATH and VIRT");
+                    std::process::exit(1);
+                }
+                let virt = args[i].clone();
+                match crate::vfs::ShareSpec::map(&path, &virt) {
                     Ok(s) => shares.push(s),
                     Err(e) => {
-                        eprintln!("error: --mount: {e}");
+                        eprintln!("error: --map: {e}");
                         std::process::exit(1);
                     }
                 }
