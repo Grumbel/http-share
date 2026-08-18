@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Ingo Ruhnke <grumbel@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Virtual filesystem: only explicit CLI paths under /pub/, extra mounts (incoming).
+//! Virtual filesystem: only explicit CLI paths at the virtual root, extra mounts (incoming).
 
 use std::collections::HashMap;
 use std::env;
@@ -55,6 +55,38 @@ impl Vfs {
             .map_err(|e| {
                 io::Error::new(e.kind(), format!("cannot stat {}: {e}", path.display()))
             })?;
+
+            // `http-share .` should expose the contents of the current directory at the
+            // virtual root, not mount the CWD under its basename (which is confusing).
+            let is_dot = p.as_os_str() == "." || p.as_os_str() == "./";
+            if is_dot && final_meta.is_dir() {
+                for entry in fs::read_dir(&path)? {
+                    let entry = entry?;
+                    let child = entry.path();
+                    let cmeta = if follow_symlinks {
+                        fs::metadata(&child)
+                    } else {
+                        fs::symlink_metadata(&child)
+                    }?;
+                    let cname = entry.file_name().to_string_lossy().into_owned();
+                    if cname == "." || cname == ".." {
+                        continue;
+                    }
+                    if files.contains_key(&cname) || dirs.contains_key(&cname) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("name collision for '{cname}' while expanding '.'"),
+                        ));
+                    }
+                    if cmeta.is_dir() {
+                        dirs.insert(cname, child);
+                    } else if cmeta.is_file() {
+                        files.insert(cname, child);
+                    }
+                    // skip other types (sockets, etc.)
+                }
+                continue;
+            }
 
             let name = path
                 .file_name()
@@ -177,7 +209,9 @@ impl Vfs {
     }
 
     /// Resolve a request path.
-    /// Shared CLI paths live under `/pub/`. Extra mounts (e.g. `incoming`) stay at their name.
+    /// Shared CLI paths live at the virtual root. Extra mounts (e.g. `incoming`)
+    /// stay at their name. Reserved names (`incoming`, etc.) take precedence
+    /// only when mounted; CLI paths must not collide with them at creation time.
     pub(crate) fn resolve(&self, req_path: &str) -> Option<Resolved> {
         let req_path = req_path.trim_start_matches('/');
         if req_path.is_empty() || req_path == "." {
@@ -188,34 +222,18 @@ impl Vfs {
             return None;
         }
 
-        // /pub and /pub/ → listing of shared CLI paths
-        if req_path == "pub" {
-            return Some(Resolved::PubIndex);
+        // Exact top-level shared file
+        if !req_path.contains('/') {
+            if let Some(real) = self.files.get(req_path) {
+                return Some(Resolved::File(real.clone()));
+            }
         }
 
-        // /pub/<rest> → shared file or directory
-        if let Some(rest) = req_path.strip_prefix("pub/") {
-            return self.resolve_shared(rest);
-        }
-
-        // Other top-level mounts (e.g. incoming) and their children
         let mut parts = req_path.splitn(2, '/');
         let first = parts.next()?;
         let rest = parts.next().unwrap_or("");
 
-        // Do not allow shared file names at virtual root (they are under /pub/)
-        if rest.is_empty() {
-            if self.files.contains_key(first) {
-                return None;
-            }
-        }
-
         if let Some(dir_root) = self.dirs.get(first) {
-            // Outside /pub/, only the explicit "incoming" mount is reachable.
-            // Shared CLI dirs live under /pub/ via resolve_shared().
-            if first != "incoming" {
-                return None;
-            }
             if rest.is_empty() {
                 return Some(Resolved::Dir(dir_root.clone(), first.to_string()));
             }
@@ -239,73 +257,16 @@ impl Vfs {
 
         None
     }
-
-    /// Resolve a path relative to the shared CLI virtual root (under /pub/).
-    pub(crate) fn resolve_shared(&self, rest: &str) -> Option<Resolved> {
-        let rest = rest.trim_start_matches('/');
-        if rest.is_empty() || rest == "." {
-            return Some(Resolved::PubIndex);
-        }
-        if rest.contains('\0') || rest.contains('\\') {
-            return None;
-        }
-
-        // Exact file (basename)
-        if !rest.contains('/') {
-            if let Some(real) = self.files.get(rest) {
-                return Some(Resolved::File(real.clone()));
-            }
-        }
-
-        let mut parts = rest.splitn(2, '/');
-        let first = parts.next()?;
-        let sub = parts.next().unwrap_or("");
-
-        if let Some(dir_root) = self.dirs.get(first) {
-            // Shared CLI dir: exclude the incoming mount from /pub/
-            if first == "incoming" {
-                return None;
-            }
-            if sub.is_empty() {
-                return Some(Resolved::Dir(
-                    dir_root.clone(),
-                    format!("pub/{first}"),
-                ));
-            }
-            let components = Self::validate_components(sub)?;
-            let resolved = self.safe_join(dir_root, &components)?;
-            let meta = fs::symlink_metadata(&resolved).ok()?;
-            if meta.is_file()
-                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_file()).unwrap_or(false))
-            {
-                if !self.follow_symlinks && meta.file_type().is_symlink() {
-                    return None;
-                }
-                return Some(Resolved::File(resolved));
-            }
-            if meta.is_dir()
-                || (self.follow_symlinks && fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false))
-            {
-                return Some(Resolved::Dir(
-                    resolved,
-                    format!("pub/{rest}"),
-                ));
-            }
-        }
-
-        None
-    }
 }
 
 #[derive(Debug)]
 pub(crate) enum Resolved {
-    /// Site landing page at `/`
+    /// Listing / landing at `/` (shared CLI paths + nav links)
     Index,
-    /// Listing of shared CLI paths at `/pub/`
-    PubIndex,
     File(PathBuf),
     Dir(PathBuf, String),
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -327,19 +288,18 @@ mod tests {
     }
 
     #[test]
-    fn shared_paths_live_under_pub() {
+    fn shared_paths_live_at_root() {
         let dir = tmpdir("shared");
         let file = dir.join("a.txt");
         fs::write(&file, b"hi").unwrap();
         let vfs = Vfs::from_paths(&[file.clone()], false).unwrap();
         assert!(matches!(vfs.resolve("/"), Some(Resolved::Index)));
-        assert!(matches!(vfs.resolve("/pub"), Some(Resolved::PubIndex)));
-        assert!(matches!(vfs.resolve("/pub/"), Some(Resolved::PubIndex)));
-        match vfs.resolve("/pub/a.txt") {
+        match vfs.resolve("/a.txt") {
             Some(Resolved::File(p)) => assert_eq!(p, file),
             other => panic!("expected file, got {other:?}"),
         }
-        assert!(vfs.resolve("/a.txt").is_none());
+        // Old /pub/ layout is gone
+        assert!(vfs.resolve("/pub").is_none() || matches!(vfs.resolve("/pub"), Some(Resolved::Dir(_, _))));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -350,22 +310,47 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join("x"), b"1").unwrap();
         let vfs = Vfs::from_paths(&[sub.clone()], false).unwrap();
-        let ok = vfs.resolve("/pub/shareddir/x");
+        let ok = vfs.resolve("/shareddir/x");
         assert!(
             matches!(ok, Some(Resolved::File(_))),
-            "expected /pub/shareddir/x, got {ok:?}; dirs={:?}",
+            "expected /shareddir/x, got {ok:?}; dirs={:?}",
             vfs.dirs.keys().collect::<Vec<_>>()
         );
         assert!(
-            vfs.resolve("/pub/shareddir/../x").is_none(),
+            vfs.resolve("/shareddir/../x").is_none(),
             "dot-dot must be rejected"
         );
-        assert!(vfs.resolve("/pub/shareddir/../../etc/passwd").is_none());
+        assert!(vfs.resolve("/shareddir/../../etc/passwd").is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn incoming_mount_not_under_pub() {
+    fn dot_share_flattens_contents() {
+        let dir = tmpdir("dotflat");
+        fs::write(dir.join("a.txt"), b"a").unwrap();
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("b.txt"), b"b").unwrap();
+        // Simulate being inside `dir` and sharing "."
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let vfs = Vfs::from_paths(&[PathBuf::from(".")], false).unwrap();
+        std::env::set_current_dir(&old).unwrap();
+        match vfs.resolve("/a.txt") {
+            Some(Resolved::File(_)) => {}
+            other => panic!("expected /a.txt file, got {other:?}"),
+        }
+        match vfs.resolve("/sub") {
+            Some(Resolved::Dir(_, _)) => {}
+            other => panic!("expected /sub dir, got {other:?}"),
+        }
+        // Should not mount under the basename of the temp dir
+        assert!(vfs.resolve(&format!("/{}", dir.file_name().unwrap().to_string_lossy())).is_none()
+            || !vfs.dirs.contains_key(&dir.file_name().unwrap().to_string_lossy().into_owned()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incoming_mount_at_its_name() {
         let dir = tmpdir("incoming");
         let inc = dir.join("in");
         fs::create_dir(&inc).unwrap();
@@ -376,7 +361,7 @@ mod tests {
             vfs.resolve("/incoming/u.txt"),
             Some(Resolved::File(_))
         ));
-        assert!(vfs.resolve("/pub/incoming/u.txt").is_none());
+        // Shared CLI paths and incoming share the same root namespace
         let _ = fs::remove_dir_all(&dir);
     }
 }
