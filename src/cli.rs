@@ -49,10 +49,7 @@ Shared files are served at the site root. Uploads go to /incoming/.
 Share selection (rsync-like):
   PATH                 Share PATH as /basename
   PATH/                Share *contents* of directory PATH at the root
-  NAME=PATH            Mount PATH as /NAME
-  NAME=PATH/           Same as NAME=PATH for directories
-  --mount NAME=PATH    Same as NAME=PATH (repeatable)
-  --mount NAME PATH    Two-argument form (paths may contain '=')
+  --mount NAME PATH    Mount PATH as /NAME (repeatable; NAME is one component)
 
 Network:
   -p, --port PORT          Port to listen on (default: 8000)
@@ -62,7 +59,7 @@ Network:
       --qr                 Print a terminal QR code (query-auth URL when auth is on)
 
 Share selection:
-      --mount NAME=PATH    Mount PATH as /NAME (repeatable)
+      --mount NAME PATH    Mount PATH as /NAME (repeatable)
       --follow-symlinks    Follow symbolic links when sharing paths
 
 Authentication:
@@ -172,42 +169,22 @@ pub(crate) fn parse_args() -> Args {
             "--mount" => {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("error: --mount requires NAME=PATH or NAME PATH");
+                    eprintln!("error: --mount requires NAME and PATH");
                     std::process::exit(1);
                 }
-                let first = args[i].clone();
-                if first.contains('=') {
-                    match crate::vfs::ShareSpec::parse(&first) {
-                        Ok(s) => shares.push(s),
-                        Err(e) => {
-                            eprintln!("error: --mount: {e}");
-                            std::process::exit(1);
-                        }
-                    }
-                } else {
-                    // Two-arg form: --mount NAME PATH
-                    i += 1;
-                    if i >= args.len() {
-                        eprintln!("error: --mount NAME requires a PATH argument");
+                let name = args[i].clone();
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --mount requires NAME and PATH");
+                    std::process::exit(1);
+                }
+                let path = args[i].clone();
+                match crate::vfs::ShareSpec::mount(&name, &path) {
+                    Ok(s) => shares.push(s),
+                    Err(e) => {
+                        eprintln!("error: --mount: {e}");
                         std::process::exit(1);
                     }
-                    let name = first;
-                    let path = args[i].clone();
-                    if name.contains('/') || name == "." || name == ".." {
-                        eprintln!("error: --mount: virtual name must be a single path component");
-                        std::process::exit(1);
-                    }
-                    let flatten = path.ends_with('/') && path != "/";
-                    let path_str = if flatten {
-                        path.trim_end_matches('/').to_string()
-                    } else {
-                        path
-                    };
-                    shares.push(crate::vfs::ShareSpec {
-                        virt: Some(name),
-                        path: PathBuf::from(path_str),
-                        flatten,
-                    });
                 }
             },
             "--public" => public = true,

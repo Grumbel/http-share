@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 ///
 /// * `virt = None`, `flatten = false` — mount under the path's basename.
 /// * `virt = None`, `flatten = true` — mount directory *contents* at the root.
-/// * `virt = Some(name)`, `flatten = false` — mount the path as `/name`.
-/// * `virt = Some(name)`, `flatten = true` — same as non-flatten for directories
-///   (children appear under `/name/`); for files, trailing slash is ignored.
+/// * `virt = Some(name)`, `flatten = false` — mount the path as `/name`
+///   (from `--mount NAME PATH`).
+/// * Trailing slash on PATH only affects root-level flatten (`PATH/`).
 #[derive(Debug, Clone)]
 pub(crate) struct ShareSpec {
     pub virt: Option<String>,
@@ -24,46 +24,64 @@ pub(crate) struct ShareSpec {
 }
 
 impl ShareSpec {
-    /// Parse a CLI share token: `PATH`, `PATH/`, `NAME=PATH`, or `NAME=PATH/`.
+    /// Parse a positional share token: `PATH` or `PATH/` (contents at root).
+    /// Renames use `--mount NAME PATH`, not `NAME=PATH`.
     pub(crate) fn parse(token: &str) -> Result<Self, String> {
         let token = token.trim();
         if token.is_empty() {
             return Err("empty share path".into());
         }
 
-        let (virt, rest) = if let Some((left, right)) = token.split_once('=') {
-            if left.is_empty() || right.is_empty() {
-                return Err(format!(
-                    "invalid share '{token}': expected NAME=PATH (both sides non-empty)"
-                ));
-            }
-            if left.contains('/') || left == "." || left == ".." {
-                return Err(format!(
-                    "invalid virtual name '{left}': must be a single path component"
-                ));
-            }
-            if left == "incoming" || left == "upload" || left == "message" || left == "certificate.pem" {
-                return Err(format!(
-                    "virtual name '{left}' is reserved"
-                ));
-            }
-            (Some(left.to_string()), right)
-        } else {
-            (None, token)
-        };
-
-        let flatten = rest.ends_with('/') && rest != "/" && rest != "//";
+        let flatten = token.ends_with('/') && token != "/" && token != "//";
         let path_str = if flatten {
-            rest.trim_end_matches('/')
+            token.trim_end_matches('/')
         } else {
-            rest
+            token
         };
         if path_str.is_empty() {
             return Err(format!("invalid share '{token}': empty path"));
         }
-        // Keep "." as-is for later flatten-at-root handling
         Ok(ShareSpec {
-            virt,
+            virt: None,
+            path: PathBuf::from(path_str),
+            flatten,
+        })
+    }
+
+    /// Build a named mount from `--mount NAME PATH` (PATH may end with `/`).
+    pub(crate) fn mount(name: &str, path_token: &str) -> Result<Self, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("virtual name must not be empty".into());
+        }
+        if name.contains('/') || name == "." || name == ".." {
+            return Err(format!(
+                "invalid virtual name '{name}': must be a single path component"
+            ));
+        }
+        if name == "incoming"
+            || name == "upload"
+            || name == "message"
+            || name == "certificate.pem"
+        {
+            return Err(format!("virtual name '{name}' is reserved"));
+        }
+
+        let path_token = path_token.trim();
+        if path_token.is_empty() {
+            return Err("mount path must not be empty".into());
+        }
+        let flatten = path_token.ends_with('/') && path_token != "/";
+        let path_str = if flatten {
+            path_token.trim_end_matches('/')
+        } else {
+            path_token
+        };
+        if path_str.is_empty() {
+            return Err("mount path must not be empty".into());
+        }
+        Ok(ShareSpec {
+            virt: Some(name.to_string()),
             path: PathBuf::from(path_str),
             flatten,
         })
@@ -467,19 +485,24 @@ mod tests {
         assert!(s.flatten);
         assert_eq!(s.path, PathBuf::from("photos"));
 
-        let s = ShareSpec::parse("docs=./MyDocs").unwrap();
+        // '=' is just part of the path for positional tokens
+        let s = ShareSpec::parse("foo=bar.txt").unwrap();
+        assert!(s.virt.is_none());
+        assert_eq!(s.path, PathBuf::from("foo=bar.txt"));
+
+        let s = ShareSpec::mount("docs", "./MyDocs").unwrap();
         assert_eq!(s.virt.as_deref(), Some("docs"));
         assert!(!s.flatten);
         assert_eq!(s.path, PathBuf::from("./MyDocs"));
 
-        let s = ShareSpec::parse("docs=./MyDocs/").unwrap();
+        let s = ShareSpec::mount("docs", "./MyDocs/").unwrap();
         assert_eq!(s.virt.as_deref(), Some("docs"));
         assert!(s.flatten);
         assert_eq!(s.path, PathBuf::from("./MyDocs"));
 
-        assert!(ShareSpec::parse("=foo").is_err());
-        assert!(ShareSpec::parse("a/b=foo").is_err());
-        assert!(ShareSpec::parse("incoming=foo").is_err());
+        assert!(ShareSpec::mount("", "foo").is_err());
+        assert!(ShareSpec::mount("a/b", "foo").is_err());
+        assert!(ShareSpec::mount("incoming", "foo").is_err());
     }
 
     #[test]

@@ -80,13 +80,13 @@ Example: `http-share report.pdf photos/` serves `report.pdf` at `/report.pdf` an
 |-------|--------|
 | `PATH` | Share as `/basename` |
 | `PATH/` | Share *contents* of a directory at the site root |
-| `NAME=PATH` | Mount `PATH` as `/NAME` |
-| `--mount NAME=PATH` | Same as `NAME=PATH` (repeatable; use `--mount NAME PATH` if the path contains `=`) |
+| `--mount NAME PATH` | Mount `PATH` as `/NAME` (`NAME` is one path component) |
 
 ```sh
-http-share photos/                  # children of photos at /
-http-share docs=./Documents         # /docs/ → Documents
-http-share --mount readme NOTES.txt # /readme → NOTES.txt
+http-share photos/                     # children of photos at /
+http-share --mount docs ./Documents    # /docs/ → Documents
+http-share --mount readme NOTES.txt    # /readme → NOTES.txt
+http-share --mount f 'foo=bar.txt'     # /f → file whose name contains '='
 ```
 
 
