@@ -119,5 +119,6 @@ Derived from PROPOSAL.md.
 - [x] add a text field that allows sending human readable messages to the server
 - [x] need better reporting of errors (HTML error pages + clearer server logs)
 - [x] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
-- [x] Flexible virtual mounts: PATH/, --map PATH VIRT
+- [x] Flexible virtual mounts: PATH/, --map PATH VIRT (deep paths + merge same VIRT)
+- [x] `--rq` reversed-color QR
 

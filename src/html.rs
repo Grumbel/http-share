@@ -3,8 +3,6 @@
 
 //! HTML directory listings, error pages, message form, and upload form.
 
-use std::fs;
-use std::path::Path;
 
 use crate::auth::with_auth_query;
 use crate::cli::VERSION;
@@ -104,7 +102,6 @@ pub(crate) fn message_result_html(ok: bool, message: &str, auth_q: &str) -> Stri
 pub(crate) fn listing_html(
     vfs: &Vfs,
     virt_path: &str,
-    real_dir: Option<&Path>,
     show_upload: bool,
     show_cert: bool,
     auth_q: &str,
@@ -112,78 +109,36 @@ pub(crate) fn listing_html(
     // (href, display, is_dir, size_label)
     let mut items: Vec<(String, String, bool, String)> = Vec::new();
 
-    if let Some(dir) = real_dir {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                // Hide internal temp upload files
-                if name.starts_with(".upload-") && name.ends_with(".tmp") {
-                    continue;
-                }
-                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let href = if virt_path.is_empty() || virt_path == "/" {
-                    format!("/{}", encode_path_component(&name))
-                } else {
-                    format!(
-                        "/{}/{}",
-                        virt_path.trim_matches('/'),
-                        encode_path_component(&name)
-                    )
-                };
-                let display = if is_dir {
-                    format!("{name}/")
-                } else {
-                    name.clone()
-                };
-                let size_label = if is_dir {
-                    String::new()
-                } else {
-                    entry
-                        .metadata()
-                        .map(|m| format_bytes(m.len()))
-                        .unwrap_or_default()
-                };
-                items.push((href, display, is_dir, size_label));
-            }
-        }
+    let list_key = if virt_path.is_empty() || virt_path == "/" {
+        ""
     } else {
-        // Virtual listing (root): shared CLI files + dirs, skip extra mounts
-        let prefix = if virt_path.is_empty() || virt_path == "/" {
+        virt_path.trim_matches('/')
+    };
+    if let Some(entries) = vfs.list(list_key) {
+        let prefix = if list_key.is_empty() {
             String::new()
         } else {
-            format!("/{}", virt_path.trim_matches('/'))
+            format!("/{list_key}")
         };
-        for (name, path) in &vfs.files {
-            let size_label = fs::metadata(path)
-                .map(|m| format_bytes(m.len()))
-                .unwrap_or_default();
-            items.push((
-                format!("{prefix}/{}", encode_path_component(name)),
-                name.clone(),
-                false,
-                size_label,
-            ));
-        }
-        for name in vfs.dirs.keys() {
-            if name == "incoming" {
-                continue; // extra mount (incoming), listed via nav instead
+        for e in entries {
+            // At root, incoming is shown via nav, not as a list row
+            if list_key.is_empty() && e.name == "incoming" {
+                continue;
             }
-            items.push((
-                format!("{prefix}/{}/", encode_path_component(name)),
-                format!("{name}/"),
-                true,
-                String::new(),
-            ));
+            let href = if e.is_dir {
+                format!("{prefix}/{}/", encode_path_component(&e.name))
+            } else {
+                format!("{prefix}/{}", encode_path_component(&e.name))
+            };
+            let display = if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            };
+            let size_label = e.size.map(format_bytes).unwrap_or_default();
+            items.push((href, display, e.is_dir, size_label));
         }
     }
-
-    items.sort_by(|a, b| {
-        match (a.2, b.2) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.1.to_lowercase().cmp(&b.1.to_lowercase()),
-        }
-    });
 
     // Keep query-auth credentials on every link (QR → browse without losing session)
     if !auth_q.is_empty() {
@@ -279,7 +234,7 @@ pub(crate) fn listing_html(
             with_auth_query("/upload", auth_q)
         ));
     }
-    if vfs.dirs.contains_key("incoming") && !virt_path.starts_with("incoming") {
+    if vfs.has_top_level("incoming") && !virt_path.starts_with("incoming") {
         nav.push(format!(
             r#"<a href="{}">Browse /incoming/</a>"#,
             with_auth_query("/incoming/", auth_q)

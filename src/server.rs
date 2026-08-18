@@ -265,7 +265,7 @@ pub(crate) fn handle_request(
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
             // Root lists shared CLI paths (and nav links to incoming/upload/cert)
-            let html = listing_html(vfs, "", None, show_upload, show_cert, &auth_q);
+            let html = listing_html(vfs, "", show_upload, show_cert, &auth_q);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
@@ -303,8 +303,8 @@ pub(crate) fn handle_request(
                 }
             }
         }
-        Some(Resolved::Dir(real, virt)) => {
-            let html = listing_html(vfs, &virt, Some(&real), show_upload, show_cert, &auth_q);
+        Some(Resolved::Dir(_, ref virt)) | Some(Resolved::VirtualDir(ref virt)) => {
+            let html = listing_html(vfs, &virt, show_upload, show_cert, &auth_q);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");

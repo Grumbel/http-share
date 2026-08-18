@@ -20,6 +20,7 @@ pub(crate) struct Args {
     pub(crate) public: bool,
     pub(crate) open: bool,
     pub(crate) qr: bool,
+    pub(crate) rq: bool,
     pub(crate) https: bool,
     pub(crate) dynamic_cert: bool,
     pub(crate) regenerate_cert: bool,
@@ -49,7 +50,7 @@ Shared files are served at the site root. Uploads go to /incoming/.
 Share selection (rsync-like):
   PATH                 Share PATH as /basename
   PATH/                Share *contents* of directory PATH at the root
-  --map PATH VIRT      Expose PATH as /VIRT (repeatable; VIRT is one component)
+  --map PATH VIRT      Expose PATH as /VIRT (repeatable; VIRT may be a/b/c)
 
 Network:
   -p, --port PORT          Port to listen on (default: 8000)
@@ -57,9 +58,10 @@ Network:
   -v, --verbose            Verbose logging
       --open               Open primary share URL in the default browser
       --qr                 Print a terminal QR code (query-auth URL when auth is on)
+      --rq                 Like --qr but with reversed QR colors
 
 Share selection:
-      --map PATH VIRT      Expose PATH as /VIRT (repeatable)
+      --map PATH VIRT      Expose PATH as /VIRT (repeatable; deep paths ok)
       --follow-symlinks    Follow symbolic links when sharing paths
 
 Authentication:
@@ -117,6 +119,7 @@ pub(crate) fn parse_args() -> Args {
     let mut public = false;
     let mut open = false;
     let mut qr = false;
+    let mut rq = false;
     let mut https = false;
     let mut dynamic_cert = false;
     let mut regenerate_cert = false;
@@ -190,6 +193,7 @@ pub(crate) fn parse_args() -> Args {
             "--public" => public = true,
             "--open" => open = true,
             "--qr" => qr = true,
+            "--rq" => rq = true,
             "--https" => https = true,
             "--http" => https = false,
             "--dynamic-cert" => dynamic_cert = true,
@@ -335,6 +339,7 @@ pub(crate) fn parse_args() -> Args {
         public,
         open,
         qr,
+        rq,
         https,
         dynamic_cert,
         regenerate_cert,

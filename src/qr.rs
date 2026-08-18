@@ -4,6 +4,15 @@
 //! Minimal QR encoder (byte mode, ECC-L, versions 1–6).
 
 pub(crate) fn qr_print(text: &str) {
+    qr_print_impl(text, false);
+}
+
+/// Like [`qr_print`], but with inverted module colors (dark modules as blocks).
+pub(crate) fn qr_print_inverted(text: &str) {
+    qr_print_impl(text, true);
+}
+
+fn qr_print_impl(text: &str, inverted: bool) {
     match qr_encode(text.as_bytes()) {
         Some(matrix) => {
             let n = matrix.len();
@@ -17,10 +26,13 @@ pub(crate) fn qr_print(text: &str) {
                     } else {
                         false
                     };
-                    if on {
-                        print!("  ");
-                    } else {
+                    // Default: dark modules are spaces on a "██" background (light-on-dark terminals).
+                    // Inverted: dark modules are "██" (better on light backgrounds / some terminals).
+                    let dark = if inverted { on } else { !on };
+                    if dark {
                         print!("██");
+                    } else {
+                        print!("  ");
                     }
                 }
                 println!();

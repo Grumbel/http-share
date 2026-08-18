@@ -33,7 +33,7 @@ use rustls::ServerConfig;
 use auth::build_share_url;
 use cli::parse_args;
 use net::{host_for_url, is_ipv6, is_loopback, local_ips, open_browser};
-use qr::qr_print;
+use qr::{qr_print, qr_print_inverted};
 use server::{handle_client_plain, handle_client_tls};
 use state::{CTRL_C_RUNNING, LifetimeState, TransferStats};
 use tls::{load_or_create_cert, make_tls_config};
@@ -93,16 +93,10 @@ fn main() {
     let vfs = Arc::new(vfs);
 
     if args.verbose {
-        eprintln!(
-            "sharing {} file(s), {} directory(ies)",
-            vfs.files.len(),
-            vfs.dirs.len()
-        );
-        for (n, p) in &vfs.files {
-            eprintln!("  file  /{n} → {}", p.display());
-        }
-        for (n, p) in &vfs.dirs {
-            eprintln!("  dir   /{n}/ → {}", p.display());
+        let (nf, nd) = vfs.top_level_count();
+        eprintln!("sharing {nf} top-level file(s), {nd} top-level directory(ies)");
+        for line in vfs.describe_shares() {
+            eprintln!("{line}");
         }
         if let Some(ref d) = args.incoming {
             eprintln!(
@@ -271,7 +265,7 @@ fn main() {
             open_browser(url);
         }
     }
-    if args.qr {
+    if args.qr || args.rq {
         // Prefer query-parameter credentials for QR: many Android scanners do not
         // preserve userinfo (user:pass@host) when opening the URL.
         let qr_url = if let Some(ref url) = primary_url {
@@ -294,9 +288,18 @@ fn main() {
             String::new()
         };
         if !qr_url.is_empty() {
-            println!("QR code (query-auth URL, Android-friendly):");
+            let label = if args.rq {
+                "QR code (reversed colors, query-auth URL):"
+            } else {
+                "QR code (query-auth URL, Android-friendly):"
+            };
+            println!("{label}");
             println!("  {qr_url}");
-            qr_print(&qr_url);
+            if args.rq {
+                qr_print_inverted(&qr_url);
+            } else {
+                qr_print(&qr_url);
+            }
         }
     }
     println!("Press Ctrl+C to stop.");

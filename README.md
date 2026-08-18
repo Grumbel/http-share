@@ -80,13 +80,16 @@ Example: `http-share report.pdf photos/` serves `report.pdf` at `/report.pdf` an
 |-------|--------|
 | `PATH` | Share as `/basename` |
 | `PATH/` | Share *contents* of a directory at the site root |
-| `--map PATH VIRT` | Expose `PATH` as `/VIRT` (`VIRT` is one path component) |
+| `--map PATH VIRT` | Expose `PATH` as `/VIRT` (`VIRT` may be nested, e.g. `a/b`) |
 
 ```sh
 http-share photos/                          # children of photos at /
 http-share --map ./Documents docs           # /docs/ → Documents
 http-share --map NOTES.txt readme           # /readme → NOTES.txt
 http-share --map 'foo=bar.txt' f            # /f → file whose name contains '='
+http-share --map ./a pub --map ./b pub      # merge a and b under /pub/
+http-share --map ./src deep/code            # /deep/code/ → src
+
 ```
 
 
