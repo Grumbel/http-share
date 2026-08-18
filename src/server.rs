@@ -14,12 +14,37 @@ use rustls::ServerConfig;
 use crate::auth::{
     auth_query_suffix, auth_set_cookie, check_auth, query_credentials_match, unauthorized,
 };
-use crate::html::{listing_html, upload_form_html, upload_result_html};
+use crate::html::{error_html, listing_html, message_result_html, upload_form_html, upload_result_html};
 use crate::http_io::{html_headers, read_http_message, serve_file, write_response};
 use crate::state::{LifetimeState, TransferStats};
 use crate::upload::{handle_upload, UploadConfig};
 use crate::util::{encode_path_component, percent_decode, parse_query};
 use crate::vfs::{Resolved, Vfs};
+
+
+fn send_error(
+    stream: &mut dyn Write,
+    status: u16,
+    reason: &str,
+    detail: &str,
+    auth_q: &str,
+    set_cookie: &Option<String>,
+    extra_headers: &[(&str, String)],
+) {
+    let html = error_html(status, reason, detail, auth_q);
+    let mut headers = html_headers(html.len(), set_cookie);
+    for (k, v) in extra_headers {
+        headers.push((k, v.clone()));
+    }
+    let _ = write_response(stream, status, reason, &headers, html.as_bytes());
+}
+
+/// Extract `message` from an `application/x-www-form-urlencoded` body.
+fn form_message_field(body: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(body).ok()?;
+    let map = parse_query(s);
+    map.get("message").map(|m| m.trim().to_string())
+}
 
 pub(crate) fn handle_request(
     stream: &mut dyn Write,
@@ -151,19 +176,62 @@ pub(crate) fn handle_request(
         }
     }
 
-    // Methods for download
+    // Human-readable message to the host process (always available)
+    if decoded == "/message" || decoded == "message" {
+        if method == "POST" {
+            const MAX_MSG: usize = 500;
+            let raw = form_message_field(body).unwrap_or_default();
+            if raw.is_empty() {
+                let html = message_result_html(false, "Empty message — nothing was sent.", &auth_q);
+                let headers = html_headers(html.len(), &set_cookie);
+                let _ = write_response(stream, 400, "Bad Request", &headers, html.as_bytes());
+                return;
+            }
+            if raw.chars().count() > MAX_MSG {
+                let html = message_result_html(
+                    false,
+                    &format!("Message too long (max {MAX_MSG} characters)."),
+                    &auth_q,
+                );
+                let headers = html_headers(html.len(), &set_cookie);
+                let _ = write_response(stream, 400, "Bad Request", &headers, html.as_bytes());
+                return;
+            }
+            // Always surface messages — that is the point of the feature
+            eprintln!("[message] {raw}");
+            let html = message_result_html(true, "Message delivered to the host.", &auth_q);
+            let headers = html_headers(html.len(), &set_cookie);
+            let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
+            return;
+        }
+        if method == "GET" || method == "HEAD" {
+            // Redirect-like: show a tiny page pointing back home (form lives on listings)
+            let html = message_result_html(
+                false,
+                "Use the message form on the directory pages to send a note to the host.",
+                &auth_q,
+            );
+            let headers = html_headers(html.len(), &set_cookie);
+            if method == "HEAD" {
+                let _ = write_response(stream, 200, "OK", &headers, b"");
+            } else {
+                let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
+            }
+            return;
+        }
+    }
+
+    // Methods for download / browse
     if method != "GET" && method != "HEAD" {
-        let allow = if upload.is_some() {
-            "GET, HEAD, POST"
-        } else {
-            "GET, HEAD"
-        };
-        let _ = write_response(
+        let allow = "GET, HEAD, POST";
+        send_error(
             stream,
             405,
             "Method Not Allowed",
+            &format!("Method {method} is not allowed for this path. Allowed: {allow}."),
+            &auth_q,
+            &set_cookie,
             &[("Allow", allow.into())],
-            b"Method Not Allowed",
         );
         return;
     }
@@ -175,7 +243,17 @@ pub(crate) fn handle_request(
         let is_root = path_trim.is_empty() || path_trim == ".";
         // Allow root (landing), incoming, and special endpoints handled above
         if !is_root && !is_incoming {
-            let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
+            send_error(
+                stream,
+                404,
+                "Not Found",
+                &format!(
+                    "Path {decoded} is not available in upload-only mode (shared downloads disabled)."
+                ),
+                &auth_q,
+                &set_cookie,
+                &[],
+            );
             return;
         }
     }
@@ -212,9 +290,16 @@ pub(crate) fn handle_request(
                     }
                 }
                 Err(e) => {
-                    if verbose {
-                        eprintln!("  error serving {}: {e}", path.display());
-                    }
+                    eprintln!("  error serving {}: {e}", path.display());
+                    send_error(
+                        stream,
+                        500,
+                        "Internal Server Error",
+                        &format!("Failed to read {}: {e}", path.display()),
+                        &auth_q,
+                        &set_cookie,
+                        &[],
+                    );
                 }
             }
         }
@@ -228,7 +313,18 @@ pub(crate) fn handle_request(
             }
         }
         None => {
-            let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
+            if verbose {
+                eprintln!("  404 {decoded}");
+            }
+            send_error(
+                stream,
+                404,
+                "Not Found",
+                &format!("No shared file or directory at {decoded}."),
+                &auth_q,
+                &set_cookie,
+                &[],
+            );
         }
     }
 }
@@ -286,9 +382,7 @@ pub(crate) fn handle_client_tls(
     let conn = match rustls::ServerConnection::new(tls_config) {
         Ok(c) => c,
         Err(e) => {
-            if verbose {
-                eprintln!("tls session error: {e}");
-            }
+            eprintln!("tls session error: {e}");
             return;
         }
     };
