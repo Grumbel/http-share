@@ -16,6 +16,8 @@ pub(crate) struct Args {
     pub(crate) port: u16,
     pub(crate) bind: String,
     pub(crate) verbose: bool,
+    /// Print the virtual filesystem tree after it is built.
+    pub(crate) tree: bool,
     pub(crate) follow_symlinks: bool,
     pub(crate) public: bool,
     pub(crate) open: bool,
@@ -56,6 +58,7 @@ Network:
   -p, --port PORT          Port to listen on (default: 8000)
       --bind ADDRESS       Address to bind (default: 0.0.0.0)
   -v, --verbose            Verbose logging
+      --tree               Print the virtual filesystem tree (can be noisy)
       --open               Open primary share URL in the default browser
       --qr                 Print a terminal QR code (query-auth URL when auth is on)
       --rq                 Like --qr but with reversed QR colors
@@ -115,6 +118,7 @@ pub(crate) fn parse_args() -> Args {
     let mut port: u16 = 8000;
     let mut bind = "0.0.0.0".to_string();
     let mut verbose = false;
+    let mut tree = false;
     let mut follow_symlinks = false;
     let mut public = false;
     let mut open = false;
@@ -168,6 +172,7 @@ pub(crate) fn parse_args() -> Args {
                 bind = args[i].clone();
             }
             "-v" | "--verbose" => verbose = true,
+            "--tree" => tree = true,
             "--follow-symlinks" => follow_symlinks = true,
             "--map" => {
                 i += 1;
@@ -335,6 +340,7 @@ pub(crate) fn parse_args() -> Args {
         port,
         bind,
         verbose,
+        tree,
         follow_symlinks,
         public,
         open,

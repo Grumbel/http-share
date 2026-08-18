@@ -501,37 +501,47 @@ impl Vfs {
         (files, dirs)
     }
 
-    /// Debug lines for verbose share listing.
+    /// Lines describing the virtual tree (for `--tree`).
     pub(crate) fn describe_shares(&self) -> Vec<String> {
         let mut out = Vec::new();
-        Self::describe_node(&self.root, "", &mut out);
+        out.push("/".to_string());
+        Self::describe_node(&self.root, "", "  ", &mut out);
         out
     }
 
-    fn describe_node(node: &Node, prefix: &str, out: &mut Vec<String>) {
+    fn describe_node(node: &Node, virt: &str, indent: &str, out: &mut Vec<String>) {
         match node {
             Node::File(p) => {
-                out.push(format!("  file  {prefix} → {}", p.display()));
+                out.push(format!("{indent}{virt}  →  {}", p.display()));
             }
             Node::Dir { reals, children } => {
-                for r in reals {
-                    let path = if prefix.is_empty() {
-                        "/".to_string()
+                if !virt.is_empty() {
+                    if reals.is_empty() {
+                        out.push(format!("{indent}{virt}/  (virtual)"));
+                    } else if reals.len() == 1 {
+                        out.push(format!("{indent}{virt}/  →  {}", reals[0].display()));
                     } else {
-                        format!("{prefix}/")
-                    };
-                    out.push(format!("  dir   {path} → {}", r.display()));
+                        out.push(format!("{indent}{virt}/  (merged {} dirs)", reals.len()));
+                        for r in reals {
+                            out.push(format!("{indent}  ↳ {}", r.display()));
+                        }
+                    }
+                } else if !reals.is_empty() {
+                    // root with real backends (unusual)
+                    for r in reals {
+                        out.push(format!("{indent}(root)  →  {}", r.display()));
+                    }
                 }
-                let mut names: Vec<_> = children.keys().collect();
+                let mut names: Vec<_> = children.keys().cloned().collect();
                 names.sort();
                 for name in names {
-                    let child = &children[name];
-                    let next = if prefix.is_empty() {
+                    let child = &children[&name];
+                    let next = if virt.is_empty() {
                         format!("/{name}")
                     } else {
-                        format!("{prefix}/{name}")
+                        format!("{virt}/{name}")
                     };
-                    Self::describe_node(child, &next, out);
+                    Self::describe_node(child, &next, indent, out);
                 }
             }
         }

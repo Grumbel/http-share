@@ -92,19 +92,22 @@ fn main() {
 
     let vfs = Arc::new(vfs);
 
-    if args.verbose {
+    if args.tree {
         let (nf, nd) = vfs.top_level_count();
-        eprintln!("sharing {nf} top-level file(s), {nd} top-level directory(ies)");
+        eprintln!("virtual filesystem ({nf} top-level file(s), {nd} directory(ies)):");
         for line in vfs.describe_shares() {
             eprintln!("{line}");
         }
         if let Some(ref d) = args.incoming {
             eprintln!(
-                "  incoming uploads → {} (browse={})",
+                "  /incoming/  →  {} (browse={})",
                 d.display(),
                 args.browse_uploads
             );
         }
+    } else if args.verbose {
+        let (nf, nd) = vfs.top_level_count();
+        eprintln!("sharing {nf} top-level file(s), {nd} top-level directory(ies)");
     }
 
     let upload_cfg: Option<UploadConfig> = args.incoming.as_ref().map(|dir| UploadConfig {
