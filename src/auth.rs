@@ -174,9 +174,9 @@ mod tests {
 
     #[test]
     fn with_auth_query_appends() {
-        assert_eq!(with_auth_query("/pub/", ""), "/pub/".to_string());
-        let s = with_auth_query("/pub/", "?user=a&password=b");
-        assert!(s.starts_with("/pub/?"));
+        assert_eq!(with_auth_query("/", ""), "/".to_string());
+        let s = with_auth_query("/", "?user=a&password=b");
+        assert!(s.starts_with("/?"));
         assert!(s.contains("user=a"));
         let s2 = with_auth_query("/x?y=1", "?user=a&password=b");
         assert!(s2.contains("y=1") && s2.contains("user=a"));

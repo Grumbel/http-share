@@ -14,7 +14,7 @@ use rustls::ServerConfig;
 use crate::auth::{
     auth_query_suffix, auth_set_cookie, check_auth, query_credentials_match, unauthorized,
 };
-use crate::html::{landing_html, listing_html, upload_form_html, upload_result_html};
+use crate::html::{listing_html, upload_form_html, upload_result_html};
 use crate::http_io::{html_headers, read_http_message, serve_file, write_response};
 use crate::state::{LifetimeState, TransferStats};
 use crate::upload::{handle_upload, UploadConfig};
@@ -168,11 +168,13 @@ pub(crate) fn handle_request(
         return;
     }
 
-    // Upload-only: block /pub/ downloads; still allow / and /incoming
+    // Upload-only: block shared-path downloads; still allow / and /incoming
     if upload.map(|u| u.upload_only).unwrap_or(false) {
         let path_trim = decoded.trim_start_matches('/');
-        let is_pub = path_trim == "pub" || path_trim.starts_with("pub/");
-        if is_pub {
+        let is_incoming = path_trim == "incoming" || path_trim.starts_with("incoming/");
+        let is_root = path_trim.is_empty() || path_trim == ".";
+        // Allow root (landing), incoming, and special endpoints handled above
+        if !is_root && !is_incoming {
             let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
             return;
         }
@@ -181,26 +183,11 @@ pub(crate) fn handle_request(
     let head_only = method == "HEAD";
     let range_header = headers.get("range").map(|s| s.as_str());
     let show_upload = upload.is_some();
-    let has_shared = !vfs.files.is_empty()
-        || vfs.dirs.keys().any(|k| k != "incoming");
-    let has_incoming = vfs.dirs.contains_key("incoming");
 
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
-            let html = landing_html(show_upload, show_cert, has_shared, has_incoming, &auth_q);
-            let headers = html_headers(html.len(), &set_cookie);
-            if head_only {
-                let _ = write_response(stream, 200, "OK", &headers, b"");
-            } else {
-                let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
-            }
-        }
-        Some(Resolved::PubIndex) => {
-            if upload.map(|u| u.upload_only).unwrap_or(false) {
-                let _ = write_response(stream, 404, "Not Found", &[], b"Not Found");
-                return;
-            }
-            let html = listing_html(vfs, "pub", None, show_upload, show_cert, &auth_q);
+            // Root lists shared CLI paths (and nav links to incoming/upload/cert)
+            let html = listing_html(vfs, "", None, show_upload, show_cert, &auth_q);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");

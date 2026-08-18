@@ -4,7 +4,7 @@
 //! http-share — minimal HTTP(S) file sharing utility for ad-hoc transfers.
 //!
 //! Only files and directories given on the command line are exposed.
-//! FTP-style URL layout: shared paths under `/pub/`, uploads under `/incoming/`,
+//! Shared paths at the virtual root; uploads under `/incoming/`,
 //! landing page at `/`.
 
 mod auth;
@@ -99,14 +99,10 @@ fn main() {
             vfs.dirs.len()
         );
         for (n, p) in &vfs.files {
-            eprintln!("  file  /pub/{n} → {}", p.display());
+            eprintln!("  file  /{n} → {}", p.display());
         }
         for (n, p) in &vfs.dirs {
-            if n == "incoming" {
-                eprintln!("  dir   /{n}/ → {}", p.display());
-            } else {
-                eprintln!("  dir   /pub/{n}/ → {}", p.display());
-            }
+            eprintln!("  dir   /{n}/ → {}", p.display());
         }
         if let Some(ref d) = args.incoming {
             eprintln!(

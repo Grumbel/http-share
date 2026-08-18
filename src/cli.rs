@@ -44,7 +44,7 @@ pub(crate) fn print_usage(program: &str) {
 Share only the files and directories you explicitly list.
 Never exposes the current working directory implicitly.
 
-Shared files are served under /pub/ (FTP-style). Uploads go to /incoming/.
+Shared files are served at the site root. Uploads go to /incoming/.
 
 Network:
   -p, --port PORT          Port to listen on (default: 8000)
@@ -70,7 +70,7 @@ TLS:
 
 Uploads:
       --incoming DIR       Accept uploads into DIR (browsable at /incoming/)
-      --upload-only        Only accept uploads (no /pub/ downloads)
+      --upload-only        Only accept uploads (no shared-path downloads)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
       --no-browse-uploads  Do not expose uploaded files under /incoming/
@@ -84,10 +84,9 @@ Lifetime:
   -V, --version            Print version and exit
   -h, --help               Print help
 
-URL layout (FTP-style):
-  /                  Landing page with links
-  /pub/              Shared files (CLI paths)
-  /pub/<name>        Shared file or directory
+URL layout:
+  /                  Shared files (CLI paths) and navigation links
+  /<name>            Shared file or directory
   /incoming/         Uploaded files (when --incoming, unless --no-browse-uploads)
   /upload            Upload form (when --incoming)
   /certificate.pem   HTTPS server certificate (when --https)
