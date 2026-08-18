@@ -89,6 +89,7 @@ URL layout:
   /<name>            Shared file or directory
   /incoming/         Uploaded files (when --incoming, unless --no-browse-uploads)
   /upload            Upload form (when --incoming)
+  /message           POST a short text note to the host (also form on pages)
   /certificate.pem   HTTPS server certificate (when --https)
 
 Auth: HTTP Basic Auth, or query parameters ?user=…&password=… (or ?u=…&p=…)

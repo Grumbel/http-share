@@ -114,7 +114,8 @@ Derived from PROPOSAL.md.
 ## Open / agent TODO
 
 - [x] Remove `/pub/` subdirectory; shared paths live at the virtual root
+- [x] Footer shows `http-share <version>`
 - [x] `http-share .` flattens CWD contents into the virtual root (not under CWD basename)
-- [ ] add a text field that allows sending human readable messages to the server
-- [ ] need better reporting of errors
+- [x] add a text field that allows sending human readable messages to the server
+- [x] need better reporting of errors (HTML error pages + clearer server logs)
 - [ ] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
