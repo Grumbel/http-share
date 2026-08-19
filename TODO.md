@@ -123,3 +123,7 @@ Derived from PROPOSAL.md.
 - [x] `--rq` reversed-color QR
 - [x] `--map-incoming NAME` rename upload browse path
 - [x] API under /api/ with --map-api PREFIX
+
+## Deferred
+
+- [ ] GUI / TUI companions — see `IDEAS-UI.md` (explicitly postponed)

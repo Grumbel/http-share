@@ -11,7 +11,7 @@ Guidance for humans and coding agents working on this repository.
 
 `http-share` is a **minimal HTTP(S) file sharing utility** for ad-hoc, trusted peer-to-peer transfers. Share only the paths you list on the CLI; no implicit CWD exposure, no permanent hosting.
 
-Authoritative design: `PROPOSAL.md`.  
+Authoritative design: `PROPOSAL.md; deferred UI notes in `IDEAS-UI.md``.  
 Task tracking: `TODO.md`.
 
 ## Hard constraints
@@ -43,7 +43,7 @@ src/
   net.rs        # LAN IP detection, open browser
   qr.rs         # pure-Rust QR encoder
 Cargo.toml / Cargo.lock / build.rs / VERSION / flake.nix
-PROPOSAL.md / TODO.md / AGENTS.md / README.md
+PROPOSAL.md; deferred UI notes in `IDEAS-UI.md` / TODO.md / AGENTS.md / README.md
 ```
 
 Prefer **small modules** over a single giant `main.rs` so agents and humans can
@@ -104,7 +104,7 @@ Nix: `nix build` / `nix run` (flake present; may be unavailable in some agent en
 
 ## How to extend
 
-1. Read `PROPOSAL.md` + the relevant Phase in `TODO.md`.
+1. Read `PROPOSAL.md; deferred UI notes in `IDEAS-UI.md`` + the relevant Phase in `TODO.md`.
 2. Prefer **no new crates**. If a crate is unavoidable, pin an exact version compatible with rustc 1.75 / edition 2021.
 3. Add CLI flags in `parse_args` + usage text; thread config through `Args` → `main` → handlers.
 4. Keep responses streaming from disk; do not load whole files into memory for downloads.
