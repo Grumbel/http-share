@@ -4,7 +4,7 @@
 //! http-share — minimal HTTP(S) file sharing utility for ad-hoc transfers.
 //!
 //! Only files and directories given on the command line are exposed.
-//! Shared paths at the virtual root; uploads under `/incoming/`,
+//! Shared paths at the virtual root; API under `/api/` (configurable),
 //! landing page at `/`.
 
 mod auth;
@@ -82,11 +82,12 @@ fn main() {
                     .map(|c| c.join(dir))
                     .unwrap_or_else(|_| dir.clone())
             };
+            let ap = args.api_prefix.as_str();
             let iname = args.incoming_name.as_str();
-            if let Err(e) = vfs.add_dir(iname, path) {
-                eprintln!("error: cannot mount /{iname}/: {e}");
+            if let Err(e) = vfs.add_dir_at(&[ap, iname], path) {
+                eprintln!("error: cannot mount /{ap}/{iname}/: {e}");
                 eprintln!(
-                    "  tip: avoid sharing a path whose basename is '{iname}', use --map-incoming, or --no-browse-uploads"
+                    "  tip: avoid sharing under '{ap}/', use --map-api / --map-incoming, or --no-browse-uploads"
                 );
                 std::process::exit(1);
             }
@@ -105,7 +106,8 @@ fn main() {
         }
         if let Some(ref d) = args.incoming {
             eprintln!(
-                "  /{}/  →  {} (browse={})",
+                "  /{}/{}/  →  {} (browse={})",
+                args.api_prefix,
                 args.incoming_name,
                 d.display(),
                 args.browse_uploads
@@ -122,6 +124,7 @@ fn main() {
         max_size: args.max_upload_size,
         allow_overwrite: args.allow_overwrite,
         upload_only: args.upload_only,
+        api_prefix: args.api_prefix.clone(),
         browse_name: args.incoming_name.clone(),
     });
 
@@ -256,7 +259,7 @@ fn main() {
 
     if args.https {
         println!("TLS:");
-        println!("  certificate: {scheme}://…/certificate.pem");
+        println!("  certificate: {scheme}://…/{}/certificate.pem", args.api_prefix);
         println!();
     }
 
@@ -268,14 +271,17 @@ fn main() {
         );
         println!("  directory: {}", uc.dir.display());
         if args.browse_uploads {
-            println!("  browse: {scheme}://…/{}/", args.incoming_name);
+            println!(
+                "  browse: {scheme}://…/{}/{}/",
+                args.api_prefix, args.incoming_name
+            );
         } else {
             println!("  browse: disabled (--no-browse-uploads)");
         }
         if let Some(max) = uc.max_size {
             println!("  max size: {max} bytes");
         }
-        println!("  form: {scheme}://…/upload");
+        println!("  form: {scheme}://…/{}/upload", args.api_prefix);
         println!();
     }
 
@@ -370,11 +376,12 @@ fn main() {
                 let upload = upload_cfg.clone();
                 let lifetime = lifetime.clone();
                 let stats = Arc::clone(&stats);
+                let api_prefix = args.api_prefix.clone();
                 thread::spawn(move || {
                     if let Some(cfg) = tls_config {
-                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload, lifetime, stats);
+                        handle_client_tls(stream, &vfs, verbose, auth, cert_pem, cfg, upload, lifetime, stats, api_prefix.clone());
                     } else {
-                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload, lifetime, stats);
+                        handle_client_plain(stream, &vfs, verbose, auth, cert_pem, upload, lifetime, stats, api_prefix.clone());
                     }
                 });
             }

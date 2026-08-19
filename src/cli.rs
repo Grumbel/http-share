@@ -36,6 +36,8 @@ pub(crate) struct Args {
     pub(crate) browse_uploads: bool,
     /// Virtual directory name for browsable uploads (default: "incoming").
     pub(crate) incoming_name: String,
+    /// URL prefix for API routes (default: "api") → /api/upload, /api/incoming/, …
+    pub(crate) api_prefix: String,
     pub(crate) one_shot: bool,
     pub(crate) expire: Option<Duration>,
     pub(crate) max_downloads: Option<u64>,
@@ -49,7 +51,7 @@ pub(crate) fn print_usage(program: &str) {
 Share only the files and directories you explicitly list.
 Never exposes the current working directory implicitly.
 
-Shared files are served at the site root. Uploads go to /incoming/.
+Shared files are served at the site root. API routes live under /api/ (see --map-api).
 
 Share selection (rsync-like):
   PATH                 Share PATH as /basename
@@ -82,8 +84,9 @@ TLS:
       --regenerate-cert    Replace the persistent self-signed certificate
 
 Uploads:
-      --incoming DIR       Accept uploads into DIR (browsable at /incoming/ by default)
-      --map-incoming NAME  Browse uploads under /NAME/ instead of /incoming/
+      --incoming DIR       Accept uploads into DIR (browsable under /api/incoming/)
+      --map-incoming NAME  Browse uploads under /api/NAME/ instead of /api/incoming/
+      --map-api PREFIX     Put API routes under /PREFIX/ (default: api)
       --upload-only        Only accept uploads (no shared-path downloads)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
@@ -99,12 +102,13 @@ Lifetime:
   -h, --help               Print help
 
 URL layout:
-  /                  Shared files (CLI paths) and navigation links
-  /<name>            Shared file or directory
-  /incoming/         Uploaded files (when --incoming; rename with --map-incoming)
-  /upload            Upload form (when --incoming)
-  /message           POST a short text note to the host (also form on pages)
-  /certificate.pem   HTTPS server certificate (when --https)
+  /                      Shared files (CLI paths) and navigation links
+  /<name>                Shared file or directory
+  /api/upload            Upload form (when --incoming)
+  /api/incoming/         Uploaded files (when --incoming; see --map-incoming)
+  /api/message           POST a short text note to the host
+  /api/certificate.pem   HTTPS server certificate (when --https)
+  (change /api/ with --map-api PREFIX)
 
 Auth: HTTP Basic Auth, or query parameters ?user=…&password=… (or ?u=…&p=…)
 for QR scanners that do not support userinfo in URLs. --qr uses the query form.
@@ -139,6 +143,7 @@ pub(crate) fn parse_args() -> Args {
     let mut allow_overwrite = false;
     let mut browse_uploads = true;
     let mut incoming_name = "incoming".to_string();
+    let mut api_prefix = "api".to_string();
     let mut one_shot = false;
     let mut expire: Option<Duration> = None;
     let mut max_downloads: Option<u64> = None;
@@ -218,6 +223,14 @@ pub(crate) fn parse_args() -> Args {
                     std::process::exit(1);
                 }
                 incoming_name = args[i].clone();
+            },
+            "--map-api" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --map-api requires PREFIX");
+                    std::process::exit(1);
+                }
+                api_prefix = args[i].clone();
             },
             "--one-shot" => one_shot = true,
             "--expire" => {
@@ -305,6 +318,16 @@ pub(crate) fn parse_args() -> Args {
     }
 
 
+    // Validate --map-api PREFIX
+    {
+        let pfx = api_prefix.trim().trim_matches('/');
+        if pfx.is_empty() || pfx.contains('/') || pfx == "." || pfx == ".." {
+            eprintln!("error: --map-api PREFIX must be a single path component");
+            std::process::exit(1);
+        }
+        api_prefix = pfx.to_string();
+    }
+
     // Validate --map-incoming NAME
     {
         let name = incoming_name.trim().trim_matches('/');
@@ -316,7 +339,29 @@ pub(crate) fn parse_args() -> Args {
             eprintln!("error: --map-incoming NAME '{name}' is reserved");
             std::process::exit(1);
         }
+        if name == api_prefix {
+            eprintln!("error: --map-incoming NAME cannot equal --map-api PREFIX '{api_prefix}'");
+            std::process::exit(1);
+        }
         incoming_name = name.to_string();
+    }
+
+    // Shares must not use the API prefix as their first path component
+    for s in &shares {
+        let first = if let Some(ref v) = s.virt {
+            v.split('/').next().unwrap_or("")
+        } else {
+            s.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+        };
+        if first == api_prefix {
+            eprintln!(
+                "error: cannot share under '{api_prefix}' (reserved API prefix; use --map-api to change it)"
+            );
+            std::process::exit(1);
+        }
     }
 
     if shares.is_empty() && incoming.is_none() {
@@ -388,6 +433,7 @@ pub(crate) fn parse_args() -> Args {
         allow_overwrite,
         browse_uploads,
         incoming_name,
+        api_prefix,
         one_shot,
         expire,
         max_downloads,

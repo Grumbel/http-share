@@ -122,3 +122,4 @@ Derived from PROPOSAL.md.
 - [x] Flexible virtual mounts: PATH/, --map PATH VIRT (deep paths + merge same VIRT)
 - [x] `--rq` reversed-color QR
 - [x] `--map-incoming NAME` rename upload browse path
+- [x] API under /api/ with --map-api PREFIX

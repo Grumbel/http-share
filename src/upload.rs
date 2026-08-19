@@ -145,8 +145,16 @@ pub(crate) struct UploadConfig {
     pub(crate) max_size: Option<u64>,
     pub(crate) allow_overwrite: bool,
     pub(crate) upload_only: bool,
-    /// Virtual path component for browsing uploads (default "incoming").
+    /// API URL prefix (default "api"), no leading/trailing slashes.
+    pub(crate) api_prefix: String,
+    /// Last component for browsing uploads (default "incoming") → /{api_prefix}/{browse_name}/.
     pub(crate) browse_name: String,
+}
+
+impl UploadConfig {
+    pub(crate) fn browse_path(&self) -> String {
+        format!("{}/{}", self.api_prefix, self.browse_name)
+    }
 }
 
 /// Shared lifetime / transfer limits. Any thread may call record_* after success.

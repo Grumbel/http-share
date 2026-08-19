@@ -57,6 +57,7 @@ pub(crate) fn handle_request(
     upload: Option<&UploadConfig>,
     lifetime: Option<&LifetimeState>,
     stats: Option<&TransferStats>,
+    api_prefix: &str,
 ) {
     let mut lines = req_head.lines();
     let request_line = match lines.next() {
@@ -106,7 +107,11 @@ pub(crate) fn handle_request(
 
     // Certificate endpoint
     if method == "GET" || method == "HEAD" {
-        if decoded == "/certificate.pem" || decoded == "certificate.pem" {
+        let cert_path = format!("/{api_prefix}/certificate.pem");
+        if decoded == cert_path
+            || decoded == format!("{api_prefix}/certificate.pem")
+            || decoded.trim_start_matches('/') == format!("{api_prefix}/certificate.pem")
+        {
             if let Some(pem) = cert_pem {
                 let mut headers = vec![
                     ("Content-Type", "application/x-pem-file".into()),
@@ -129,9 +134,12 @@ pub(crate) fn handle_request(
 
     // Upload endpoints
     if let Some(uc) = upload {
-        if decoded == "/upload" || decoded == "upload" {
+        let upload_path = format!("/{api_prefix}/upload");
+        if decoded == upload_path
+            || decoded.trim_start_matches('/') == format!("{api_prefix}/upload")
+        {
             if method == "GET" || method == "HEAD" {
-                let html = upload_form_html(&auth_q);
+                let html = upload_form_html(&auth_q, api_prefix);
                 let headers = html_headers(html.len(), &set_cookie);
                 if method == "HEAD" {
                     let _ = write_response(stream, 200, "OK", &headers, b"");
@@ -158,7 +166,8 @@ pub(crate) fn handle_request(
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         let href = format!(
-                            "/{}/{}",
+                            "/{}/{}/{}",
+                            uc.api_prefix,
                             uc.browse_name,
                             encode_path_component(&name)
                         );
@@ -175,6 +184,7 @@ pub(crate) fn handle_request(
                     &msg,
                     browse_href.as_deref(),
                     &auth_q,
+                    &uc.api_prefix,
                     &uc.browse_name,
                 );
                 let status = if ok { 201 } else { 400 };
@@ -187,12 +197,15 @@ pub(crate) fn handle_request(
     }
 
     // Human-readable message to the host process (always available)
-    if decoded == "/message" || decoded == "message" {
+    let message_path = format!("/{api_prefix}/message");
+    if decoded == message_path
+        || decoded.trim_start_matches('/') == format!("{api_prefix}/message")
+    {
         if method == "POST" {
             const MAX_MSG: usize = 500;
             let raw = form_message_field(body).unwrap_or_default();
             if raw.is_empty() {
-                let html = message_result_html(false, "Empty message — nothing was sent.", &auth_q);
+                let html = message_result_html(false, "Empty message — nothing was sent.", &auth_q, api_prefix);
                 let headers = html_headers(html.len(), &set_cookie);
                 let _ = write_response(stream, 400, "Bad Request", &headers, html.as_bytes());
                 return;
@@ -202,6 +215,7 @@ pub(crate) fn handle_request(
                     false,
                     &format!("Message too long (max {MAX_MSG} characters)."),
                     &auth_q,
+                    api_prefix,
                 );
                 let headers = html_headers(html.len(), &set_cookie);
                 let _ = write_response(stream, 400, "Bad Request", &headers, html.as_bytes());
@@ -209,7 +223,7 @@ pub(crate) fn handle_request(
             }
             // Always surface messages — that is the point of the feature
             eprintln!("[message] {raw}");
-            let html = message_result_html(true, "Message delivered to the host.", &auth_q);
+            let html = message_result_html(true, "Message delivered to the host.", &auth_q, api_prefix);
             let headers = html_headers(html.len(), &set_cookie);
             let _ = write_response(stream, 200, "OK", &headers, html.as_bytes());
             return;
@@ -220,6 +234,7 @@ pub(crate) fn handle_request(
                 false,
                 "Use the message form on the directory pages to send a note to the host.",
                 &auth_q,
+                api_prefix,
             );
             let headers = html_headers(html.len(), &set_cookie);
             if method == "HEAD" {
@@ -249,8 +264,10 @@ pub(crate) fn handle_request(
     // Upload-only: block shared-path downloads; still allow / and incoming browse path
     if upload.map(|u| u.upload_only).unwrap_or(false) {
         let path_trim = decoded.trim_start_matches('/');
-        let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
-        let is_incoming = path_trim == iname || path_trim.starts_with(&format!("{iname}/"));
+        let browse = upload
+            .map(|u| u.browse_path())
+            .unwrap_or_else(|| format!("{api_prefix}/incoming"));
+        let is_incoming = path_trim == browse || path_trim.starts_with(&format!("{browse}/"));
         let is_root = path_trim.is_empty() || path_trim == ".";
         // Allow root (landing), incoming, and special endpoints handled above
         if !is_root && !is_incoming {
@@ -277,7 +294,7 @@ pub(crate) fn handle_request(
         Some(Resolved::Index) => {
             // Root lists shared CLI paths (and nav links to incoming/upload/cert)
             let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
-            let html = listing_html(vfs, "", show_upload, show_cert, &auth_q, iname);
+            let html = listing_html(vfs, "", show_upload, show_cert, &auth_q, api_prefix, iname);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
@@ -317,7 +334,7 @@ pub(crate) fn handle_request(
         }
         Some(Resolved::Dir(_, ref virt)) | Some(Resolved::VirtualDir(ref virt)) => {
             let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
-            let html = listing_html(vfs, &virt, show_upload, show_cert, &auth_q, iname);
+            let html = listing_html(vfs, &virt, show_upload, show_cert, &auth_q, api_prefix, iname);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
@@ -351,6 +368,7 @@ pub(crate) fn handle_client_plain(
     upload: Option<UploadConfig>,
     lifetime: Option<Arc<LifetimeState>>,
     stats: Arc<TransferStats>,
+    api_prefix: String,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -375,6 +393,7 @@ pub(crate) fn handle_client_plain(
         upload.as_ref(),
         lifetime.as_deref(),
         Some(stats.as_ref()),
+        &api_prefix,
     );
 }
 
@@ -388,6 +407,7 @@ pub(crate) fn handle_client_tls(
     upload: Option<UploadConfig>,
     lifetime: Option<Arc<LifetimeState>>,
     stats: Arc<TransferStats>,
+    api_prefix: String,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(300)));
@@ -421,6 +441,7 @@ pub(crate) fn handle_client_tls(
         upload.as_ref(),
         lifetime.as_deref(),
         Some(stats.as_ref()),
+        &api_prefix,
     );
 }
 

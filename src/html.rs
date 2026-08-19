@@ -10,8 +10,8 @@ use crate::util::{encode_path_component, format_bytes, html_escape};
 use crate::vfs::Vfs;
 
 
-fn site_footer(auth_q: &str) -> String {
-    let action = with_auth_query("/message", auth_q);
+fn site_footer(auth_q: &str, api_prefix: &str) -> String {
+    let action = with_auth_query(&format!("/{api_prefix}/message"), auth_q);
     format!(
         r#"
 <form class="msg-form" method="POST" action="{action}">
@@ -72,7 +72,7 @@ pub(crate) fn error_html(status: u16, reason: &str, detail: &str, auth_q: &str) 
     )
 }
 
-pub(crate) fn message_result_html(ok: bool, message: &str, auth_q: &str) -> String {
+pub(crate) fn message_result_html(ok: bool, message: &str, auth_q: &str, api_prefix: &str) -> String {
     let cls = if ok { "msg" } else { "msg err" };
     let home = with_auth_query("/", auth_q);
     format!(
@@ -88,14 +88,14 @@ pub(crate) fn message_result_html(ok: bool, message: &str, auth_q: &str) -> Stri
 <h1>Message</h1>
 <div class="{cls}">{msg}</div>
 <p class="nav"><a href="{home}">← Home</a></p>
-<footer>http-share {ver}</footer>
+{footer}
 </body>
 </html>"#,
         cls = cls,
         msg = html_escape(message),
         home = home,
         style = SHARED_STYLE,
-        ver = VERSION,
+        footer = site_footer(auth_q, api_prefix),
     )
 }
 
@@ -105,6 +105,7 @@ pub(crate) fn listing_html(
     show_upload: bool,
     show_cert: bool,
     auth_q: &str,
+    api_prefix: &str,
     incoming_name: &str,
 ) -> String {
     // (href, display, is_dir, size_label)
@@ -122,8 +123,8 @@ pub(crate) fn listing_html(
             format!("/{list_key}")
         };
         for e in entries {
-            // At root, the incoming browse dir is shown via nav, not as a list row
-            if list_key.is_empty() && e.name == incoming_name {
+            // At root, the API prefix tree is shown via nav, not as a list row
+            if list_key.is_empty() && e.name == api_prefix {
                 continue;
             }
             let href = if e.is_dir {
@@ -232,20 +233,21 @@ pub(crate) fn listing_html(
     if show_upload {
         nav.push(format!(
             r#"<a href="{}">Upload a file…</a>"#,
-            with_auth_query("/upload", auth_q)
+            with_auth_query(&format!("/{api_prefix}/upload"), auth_q)
         ));
     }
-    if vfs.has_top_level(incoming_name) && !virt_path.starts_with(incoming_name) {
+    let incoming_path = format!("{api_prefix}/{incoming_name}");
+    if vfs.has_top_level(api_prefix) && !virt_path.starts_with(api_prefix) {
         nav.push(format!(
             r#"<a href="{}">Browse /{}/</a>"#,
-            with_auth_query(&format!("/{incoming_name}/"), auth_q),
-            incoming_name
+            with_auth_query(&format!("/{incoming_path}/"), auth_q),
+            incoming_path
         ));
     }
     if show_cert {
         nav.push(format!(
             r#"<a href="{}">Download certificate.pem</a>"#,
-            with_auth_query("/certificate.pem", auth_q)
+            with_auth_query(&format!("/{api_prefix}/certificate.pem"), auth_q)
         ));
     }
     if !nav.is_empty() {
@@ -254,14 +256,14 @@ pub(crate) fn listing_html(
         body.push_str("</p>");
     }
 
-    body.push_str(&site_footer(auth_q));
+    body.push_str(&site_footer(auth_q, api_prefix));
     body.push_str("
 </body>
 </html>");
     body
 }
 
-pub(crate) fn upload_form_html(auth_q: &str) -> String {
+pub(crate) fn upload_form_html(auth_q: &str, api_prefix: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -287,8 +289,8 @@ pub(crate) fn upload_form_html(auth_q: &str) -> String {
 </html>"#,
         style = SHARED_STYLE,
         home = with_auth_query("/", auth_q),
-        action = with_auth_query("/upload", auth_q),
-        footer = site_footer(auth_q),
+        action = with_auth_query(&format!("/{api_prefix}/upload"), auth_q),
+        footer = site_footer(auth_q, api_prefix),
     )
 }
 
@@ -297,15 +299,17 @@ pub(crate) fn upload_result_html(
     message: &str,
     browse_href: Option<&str>,
     auth_q: &str,
+    api_prefix: &str,
     incoming_name: &str,
 ) -> String {
     let cls = if ok { "msg" } else { "msg err" };
+    let browse = format!("{api_prefix}/{incoming_name}");
     let file_link = match browse_href {
         Some(href) if ok => format!(
             r#"<p><a href="{0}">Open uploaded file</a> · <a href="{1}">Browse /{2}/</a></p>"#,
             html_escape(&with_auth_query(href, auth_q)),
-            html_escape(&with_auth_query(&format!("/{incoming_name}/"), auth_q)),
-            html_escape(incoming_name),
+            html_escape(&with_auth_query(&format!("/{browse}/"), auth_q)),
+            html_escape(&browse),
         ),
         _ => String::new(),
     };
@@ -330,9 +334,9 @@ pub(crate) fn upload_result_html(
         cls = cls,
         msg = html_escape(message),
         file_link = file_link,
-        upload = with_auth_query("/upload", auth_q),
+        upload = with_auth_query(&format!("/{api_prefix}/upload"), auth_q),
         home = with_auth_query("/", auth_q),
-        footer = site_footer(auth_q),
+        footer = site_footer(auth_q, api_prefix),
     )
 }
 

@@ -64,8 +64,8 @@ impl ShareSpec {
                 return Err("invalid virtual path: NUL".into());
             }
         }
-        if components[0] == "incoming"
-            || components[0] == "upload"
+        // Builtin route names (under the API prefix); also reject as top-level share names
+        if components[0] == "upload"
             || components[0] == "message"
             || components[0] == "certificate.pem"
         {
@@ -153,9 +153,20 @@ impl Vfs {
     }
 
     pub(crate) fn add_dir(&mut self, name: &str, path: PathBuf) -> io::Result<()> {
+        self.add_dir_at(&[name], path)
+    }
+
+    /// Mount a real directory at a (possibly nested) virtual path.
+    pub(crate) fn add_dir_at(&mut self, components: &[&str], path: PathBuf) -> io::Result<()> {
+        if components.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty virtual path for directory mount",
+            ));
+        }
         Self::place_node(
             &mut self.root,
-            &[name],
+            components,
             Node::Dir {
                 reals: vec![path],
                 children: HashMap::new(),
@@ -788,7 +799,8 @@ mod tests {
         assert_eq!(s.virt.as_deref(), Some("a/b/c"));
 
         assert!(ShareSpec::map("foo", "").is_err());
-        assert!(ShareSpec::map("foo", "incoming").is_err());
+        // "incoming" is no longer reserved as a top-level share name (lives under /api/)
+        assert!(ShareSpec::map("foo", "incoming").is_ok());
         assert!(ShareSpec::map("foo", "a/../b").is_err());
     }
 
@@ -906,12 +918,12 @@ mod tests {
         fs::create_dir(&inc).unwrap();
         fs::write(inc.join("u.txt"), b"up").unwrap();
         let mut vfs = Vfs::from_paths(&[], false).unwrap();
-        vfs.add_dir("incoming", inc.clone()).unwrap();
+        vfs.add_dir_at(&["api", "incoming"], inc.clone()).unwrap();
         assert!(matches!(
-            vfs.resolve("/incoming/u.txt"),
+            vfs.resolve("/api/incoming/u.txt"),
             Some(Resolved::File(_))
         ));
-        assert!(vfs.has_top_level("incoming"));
+        assert!(vfs.has_top_level("api"));
         let _ = fs::remove_dir_all(&dir);
     }
 
