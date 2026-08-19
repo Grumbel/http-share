@@ -145,6 +145,8 @@ pub(crate) struct UploadConfig {
     pub(crate) max_size: Option<u64>,
     pub(crate) allow_overwrite: bool,
     pub(crate) upload_only: bool,
+    /// Virtual path component for browsing uploads (default "incoming").
+    pub(crate) browse_name: String,
 }
 
 /// Shared lifetime / transfer limits. Any thread may call record_* after success.

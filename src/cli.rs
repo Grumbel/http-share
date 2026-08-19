@@ -32,8 +32,10 @@ pub(crate) struct Args {
     pub(crate) upload_only: bool,
     pub(crate) max_upload_size: Option<u64>,
     pub(crate) allow_overwrite: bool,
-    /// When true (default), mount --incoming as virtual /incoming/ for browsing.
+    /// When true (default), mount --incoming under `incoming_name` for browsing.
     pub(crate) browse_uploads: bool,
+    /// Virtual directory name for browsable uploads (default: "incoming").
+    pub(crate) incoming_name: String,
     pub(crate) one_shot: bool,
     pub(crate) expire: Option<Duration>,
     pub(crate) max_downloads: Option<u64>,
@@ -80,11 +82,12 @@ TLS:
       --regenerate-cert    Replace the persistent self-signed certificate
 
 Uploads:
-      --incoming DIR       Accept uploads into DIR (browsable at /incoming/)
+      --incoming DIR       Accept uploads into DIR (browsable at /incoming/ by default)
+      --map-incoming NAME  Browse uploads under /NAME/ instead of /incoming/
       --upload-only        Only accept uploads (no shared-path downloads)
       --max-upload-size N  Max upload size (e.g. 10M, 1G; default unlimited)
       --allow-overwrite    Allow uploaded files to replace existing ones
-      --no-browse-uploads  Do not expose uploaded files under /incoming/
+      --no-browse-uploads  Do not expose uploaded files under the incoming path
 
 Lifetime:
       --one-shot           Stop after the first successful download or upload
@@ -98,7 +101,7 @@ Lifetime:
 URL layout:
   /                  Shared files (CLI paths) and navigation links
   /<name>            Shared file or directory
-  /incoming/         Uploaded files (when --incoming, unless --no-browse-uploads)
+  /incoming/         Uploaded files (when --incoming; rename with --map-incoming)
   /upload            Upload form (when --incoming)
   /message           POST a short text note to the host (also form on pages)
   /certificate.pem   HTTPS server certificate (when --https)
@@ -135,6 +138,7 @@ pub(crate) fn parse_args() -> Args {
     let mut max_upload_size: Option<u64> = None;
     let mut allow_overwrite = false;
     let mut browse_uploads = true;
+    let mut incoming_name = "incoming".to_string();
     let mut one_shot = false;
     let mut expire: Option<Duration> = None;
     let mut max_downloads: Option<u64> = None;
@@ -207,6 +211,14 @@ pub(crate) fn parse_args() -> Args {
             "--upload-only" => upload_only = true,
             "--allow-overwrite" => allow_overwrite = true,
             "--no-browse-uploads" => browse_uploads = false,
+            "--map-incoming" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --map-incoming requires NAME");
+                    std::process::exit(1);
+                }
+                incoming_name = args[i].clone();
+            },
             "--one-shot" => one_shot = true,
             "--expire" => {
                 i += 1;
@@ -292,6 +304,21 @@ pub(crate) fn parse_args() -> Args {
         i += 1;
     }
 
+
+    // Validate --map-incoming NAME
+    {
+        let name = incoming_name.trim().trim_matches('/');
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+            eprintln!("error: --map-incoming NAME must be a single path component");
+            std::process::exit(1);
+        }
+        if name == "upload" || name == "message" || name == "certificate.pem" {
+            eprintln!("error: --map-incoming NAME '{name}' is reserved");
+            std::process::exit(1);
+        }
+        incoming_name = name.to_string();
+    }
+
     if shares.is_empty() && incoming.is_none() {
         eprintln!("error: at least one path is required (or --incoming DIR)");
         print_usage(&program);
@@ -299,6 +326,10 @@ pub(crate) fn parse_args() -> Args {
     }
     if upload_only && incoming.is_none() {
         eprintln!("error: --upload-only requires --incoming DIR");
+        std::process::exit(1);
+    }
+    if incoming_name != "incoming" && incoming.is_none() {
+        eprintln!("error: --map-incoming requires --incoming DIR");
         std::process::exit(1);
     }
     if let Some(ref dir) = incoming {
@@ -356,6 +387,7 @@ pub(crate) fn parse_args() -> Args {
         max_upload_size,
         allow_overwrite,
         browse_uploads,
+        incoming_name,
         one_shot,
         expire,
         max_downloads,

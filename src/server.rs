@@ -157,7 +157,11 @@ pub(crate) fn handle_request(
                             .file_name()
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        let href = format!("/incoming/{}", encode_path_component(&name));
+                        let href = format!(
+                            "/{}/{}",
+                            uc.browse_name,
+                            encode_path_component(&name)
+                        );
                         (
                             true,
                             format!("Saved as {name} ({} bytes)", nbytes),
@@ -166,7 +170,13 @@ pub(crate) fn handle_request(
                     }
                     Err(e) => (false, e, None),
                 };
-                let html = upload_result_html(ok, &msg, browse_href.as_deref(), &auth_q);
+                let html = upload_result_html(
+                    ok,
+                    &msg,
+                    browse_href.as_deref(),
+                    &auth_q,
+                    &uc.browse_name,
+                );
                 let status = if ok { 201 } else { 400 };
                 let reason = if ok { "Created" } else { "Bad Request" };
                 let headers = html_headers(html.len(), &set_cookie);
@@ -236,10 +246,11 @@ pub(crate) fn handle_request(
         return;
     }
 
-    // Upload-only: block shared-path downloads; still allow / and /incoming
+    // Upload-only: block shared-path downloads; still allow / and incoming browse path
     if upload.map(|u| u.upload_only).unwrap_or(false) {
         let path_trim = decoded.trim_start_matches('/');
-        let is_incoming = path_trim == "incoming" || path_trim.starts_with("incoming/");
+        let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
+        let is_incoming = path_trim == iname || path_trim.starts_with(&format!("{iname}/"));
         let is_root = path_trim.is_empty() || path_trim == ".";
         // Allow root (landing), incoming, and special endpoints handled above
         if !is_root && !is_incoming {
@@ -265,7 +276,8 @@ pub(crate) fn handle_request(
     match vfs.resolve(&decoded) {
         Some(Resolved::Index) => {
             // Root lists shared CLI paths (and nav links to incoming/upload/cert)
-            let html = listing_html(vfs, "", show_upload, show_cert, &auth_q);
+            let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
+            let html = listing_html(vfs, "", show_upload, show_cert, &auth_q, iname);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");
@@ -304,7 +316,8 @@ pub(crate) fn handle_request(
             }
         }
         Some(Resolved::Dir(_, ref virt)) | Some(Resolved::VirtualDir(ref virt)) => {
-            let html = listing_html(vfs, &virt, show_upload, show_cert, &auth_q);
+            let iname = upload.map(|u| u.browse_name.as_str()).unwrap_or("incoming");
+            let html = listing_html(vfs, &virt, show_upload, show_cert, &auth_q, iname);
             let headers = html_headers(html.len(), &set_cookie);
             if head_only {
                 let _ = write_response(stream, 200, "OK", &headers, b"");

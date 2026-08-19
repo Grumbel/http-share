@@ -67,7 +67,7 @@ Shared content is organized FTP-style:
 |------|------------|
 | `/` | Listing of files and directories you passed on the command line |
 | `/<name>` | A shared file or folder |
-| `/incoming/` | Uploaded files (when uploads are enabled) |
+| `/incoming/` | Uploaded files (when uploads are enabled; rename with `--map-incoming`) |
 | `/upload` | Upload form |
 | `/message` | POST a short text note to the host process |
 | `/certificate.pem` | Server TLS certificate (HTTPS only) |

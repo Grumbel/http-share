@@ -105,6 +105,7 @@ pub(crate) fn listing_html(
     show_upload: bool,
     show_cert: bool,
     auth_q: &str,
+    incoming_name: &str,
 ) -> String {
     // (href, display, is_dir, size_label)
     let mut items: Vec<(String, String, bool, String)> = Vec::new();
@@ -121,8 +122,8 @@ pub(crate) fn listing_html(
             format!("/{list_key}")
         };
         for e in entries {
-            // At root, incoming is shown via nav, not as a list row
-            if list_key.is_empty() && e.name == "incoming" {
+            // At root, the incoming browse dir is shown via nav, not as a list row
+            if list_key.is_empty() && e.name == incoming_name {
                 continue;
             }
             let href = if e.is_dir {
@@ -234,10 +235,11 @@ pub(crate) fn listing_html(
             with_auth_query("/upload", auth_q)
         ));
     }
-    if vfs.has_top_level("incoming") && !virt_path.starts_with("incoming") {
+    if vfs.has_top_level(incoming_name) && !virt_path.starts_with(incoming_name) {
         nav.push(format!(
-            r#"<a href="{}">Browse /incoming/</a>"#,
-            with_auth_query("/incoming/", auth_q)
+            r#"<a href="{}">Browse /{}/</a>"#,
+            with_auth_query(&format!("/{incoming_name}/"), auth_q),
+            incoming_name
         ));
     }
     if show_cert {
@@ -295,13 +297,15 @@ pub(crate) fn upload_result_html(
     message: &str,
     browse_href: Option<&str>,
     auth_q: &str,
+    incoming_name: &str,
 ) -> String {
     let cls = if ok { "msg" } else { "msg err" };
     let file_link = match browse_href {
         Some(href) if ok => format!(
-            r#"<p><a href="{0}">Open uploaded file</a> · <a href="{1}">Browse /incoming/</a></p>"#,
+            r#"<p><a href="{0}">Open uploaded file</a> · <a href="{1}">Browse /{2}/</a></p>"#,
             html_escape(&with_auth_query(href, auth_q)),
-            html_escape(&with_auth_query("/incoming/", auth_q)),
+            html_escape(&with_auth_query(&format!("/{incoming_name}/"), auth_q)),
+            html_escape(incoming_name),
         ),
         _ => String::new(),
     };

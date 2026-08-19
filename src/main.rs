@@ -82,9 +82,12 @@ fn main() {
                     .map(|c| c.join(dir))
                     .unwrap_or_else(|_| dir.clone())
             };
-            if let Err(e) = vfs.add_dir("incoming", path) {
-                eprintln!("error: cannot mount /incoming/: {e}");
-                eprintln!("  tip: avoid sharing a path whose basename is 'incoming', or pass --no-browse-uploads");
+            let iname = args.incoming_name.as_str();
+            if let Err(e) = vfs.add_dir(iname, path) {
+                eprintln!("error: cannot mount /{iname}/: {e}");
+                eprintln!(
+                    "  tip: avoid sharing a path whose basename is '{iname}', use --map-incoming, or --no-browse-uploads"
+                );
                 std::process::exit(1);
             }
         }
@@ -102,7 +105,8 @@ fn main() {
         }
         if let Some(ref d) = args.incoming {
             eprintln!(
-                "  /incoming/  →  {} (browse={})",
+                "  /{}/  →  {} (browse={})",
+                args.incoming_name,
                 d.display(),
                 args.browse_uploads
             );
@@ -118,6 +122,7 @@ fn main() {
         max_size: args.max_upload_size,
         allow_overwrite: args.allow_overwrite,
         upload_only: args.upload_only,
+        browse_name: args.incoming_name.clone(),
     });
 
     let lifetime = if args.one_shot
@@ -263,7 +268,7 @@ fn main() {
         );
         println!("  directory: {}", uc.dir.display());
         if args.browse_uploads {
-            println!("  browse: {scheme}://…/incoming/");
+            println!("  browse: {scheme}://…/{}/", args.incoming_name);
         } else {
             println!("  browse: disabled (--no-browse-uploads)");
         }

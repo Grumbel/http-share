@@ -121,4 +121,4 @@ Derived from PROPOSAL.md.
 - [x] do we have a recursive flag? do we need one? (dirs are already recursive via safe_join)
 - [x] Flexible virtual mounts: PATH/, --map PATH VIRT (deep paths + merge same VIRT)
 - [x] `--rq` reversed-color QR
-
+- [x] `--map-incoming NAME` rename upload browse path
